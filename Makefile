@@ -12,7 +12,7 @@ $(error Unsupported REPOSITORY '$(REPOSITORY)'; use REPOSITORY=testpypi or REPOS
 endif
 
 test:
-	uv run --python 3.11 maturin develop
+	uvx --python 3.11 maturin develop
 	uv run --python 3.11 --extra test pytest tests/ -v -s
 
 lint:
@@ -25,7 +25,7 @@ suite:
 	$(MAKE) test && $(MAKE) lint && $(MAKE) check
 
 perf:
-	uv run --python 3.11 maturin develop --release
+	uvx --python 3.11 maturin develop --release
 	uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
 
 build:

@@ -21,6 +21,7 @@ build-backend = "maturin"
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
+    "pyyaml>=6.0",
     "qasmpi>=0.1.1",
     "bosonic-model>=0.1.1,<0.2.0",
     "bosonic-converters>=0.1.0,<0.2.0",

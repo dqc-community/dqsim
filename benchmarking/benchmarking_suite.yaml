@@ -1,0 +1,44 @@
+config:
+  seed: 42
+  shots: 1000
+
+circuits:
+  - name: deutsch_n2
+    nodes: 2
+    qubits_per_node: 1
+  - name: toffoli_n3
+    nodes: 2
+    qubits_per_node: 3
+  - name: adder_n4
+    nodes: 2
+    qubits_per_node: 2
+  - name: qft_n4
+    nodes: 2
+    qubits_per_node: 2
+  - name: bell_n4
+    nodes: 2
+    qubits_per_node: 2
+  - name: qaoa_n6
+    nodes: 3
+    qubits_per_node: 3
+  # - name: qpe_n9
+  #   nodes: 3
+  #   qubits_per_node: 4
+  # - name: ising_n10
+  #   nodes: 2
+  #   qubits_per_node: 5
+  # - name: qft_n18
+  #   nodes: 2
+  #   qubits_per_node: 9
+  # - name: square_root_n18
+  #   nodes: 2
+  #   qubits_per_node: 9
+  # - name: dnn_n16
+  #   nodes: 2
+  #   qubits_per_node: 8
+  # - name: cc_n12
+  #   nodes: 2
+  #   qubits_per_node: 6
+  # - name: bv_n14
+  #   nodes: 2
+  #   qubits_per_node: 7

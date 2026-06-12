@@ -810,7 +810,7 @@ wheels = [
 
 [[package]]
 name = "dqsim"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "bosonic-converters" },
@@ -826,6 +826,7 @@ test = [
     { name = "bosonic-model" },
     { name = "bosonic-sdk" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "qasmpi" },
     { name = "qiskit-aer" },
 ]
@@ -840,6 +841,7 @@ requires-dist = [
     { name = "bosonic-sdk", marker = "extra == 'test'", specifier = ">=0.1.0,<0.2.0", index = "https://test.pypi.org/simple" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
     { name = "qasmpi", marker = "extra == 'test'", specifier = ">=0.1.1", index = "https://test.pypi.org/simple" },
     { name = "qiskit-aer", marker = "extra == 'test'", specifier = ">=0.16" },
 ]

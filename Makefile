@@ -25,7 +25,7 @@ suite:
 
 perf:
 	uv run --python 3.11 maturin develop --release
-	uv run --python 3.11 --extra test pytest examples/test_performance.py -v -s
+	uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
 
 build:
 	rm -rf $(DIST_DIR)

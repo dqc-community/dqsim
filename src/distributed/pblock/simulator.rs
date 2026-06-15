@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
@@ -7,11 +8,15 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 
-use crate::engine::{apply_n_qubit, apply_one_qubit, apply_n_qubit_seq, apply_one_qubit_seq, measure_qubit, measure_qubit_seq, marginal_probs};
+use crate::engine::{
+    apply_n_qubit, apply_n_qubit_seq, apply_one_qubit, apply_one_qubit_seq, marginal_probs,
+    measure_qubit, measure_qubit_seq,
+};
 use crate::gates;
-use crate::types::{Circuit, FusedPBlockEntry, Instruction, format_cbits, fuse_pblock_entries};
+use crate::profiling::{self, ShotStats, ShotsProfile};
+use crate::types::{format_cbits, fuse_pblock_entries, Circuit, FusedPBlockEntry, Instruction};
 
-use super::model::{Block, BlockPool, C, m4, m8, m16, m32};
+use super::model::{m16, m32, m4, m8, Block, BlockPool, C};
 
 // ---------------------------------------------------------------------------
 // PBlockResult
@@ -62,8 +67,8 @@ impl PBlockResult {
     /// corresponds to physical qubit 0 — matching StatevectorSimulator.probabilities().
     #[pyo3(signature = (qubits=None))]
     fn probabilities(&self, py: Python, qubits: Option<Vec<usize>>) -> PyObject {
-        let phys: Vec<usize> = qubits
-            .unwrap_or_else(|| self.phys_qubits.iter().rev().cloned().collect());
+        let phys: Vec<usize> =
+            qubits.unwrap_or_else(|| self.phys_qubits.iter().rev().cloned().collect());
         let local: Vec<usize> = phys
             .iter()
             .map(|&q| {
@@ -105,8 +110,21 @@ impl PBlockSimulator {
     /// per-shot distribution that respects mid-circuit measurements and classical feedback.
     /// The expensive Python/JSON extraction happens once; only the block simulation loops.
     #[pyo3(signature = (distributed, shots=1000))]
-    pub fn simulate_shots(&self, py: Python, distributed: &Bound<PyAny>, shots: usize) -> PyResult<PyObject> {
+    pub fn simulate_shots(
+        &self,
+        py: Python,
+        distributed: &Bound<PyAny>,
+        shots: usize,
+    ) -> PyResult<PyObject> {
+        let profile_enabled = profiling::enabled();
+        let mut profile = ShotsProfile {
+            mode: "pblock",
+            shots,
+            ..ShotsProfile::default()
+        };
+
         // ── One-time setup (identical to simulate()) ──────────────────────────
+        let t = Instant::now();
         let instr_index_py = distributed.getattr("_instruction_index")?;
         let instr_index_dict = instr_index_py.downcast::<PyDict>()?;
         let mut instr_index: HashMap<usize, i64> = HashMap::new();
@@ -114,8 +132,7 @@ impl PBlockSimulator {
             instr_index.insert(k.extract()?, v.extract()?);
         }
 
-        let qpn: HashMap<usize, Vec<usize>> =
-            distributed.getattr("qubits_per_node")?.extract()?;
+        let qpn: HashMap<usize, Vec<usize>> = distributed.getattr("qubits_per_node")?.extract()?;
 
         let circuits_py = distributed.getattr("circuits")?;
         let circuits_dict = circuits_py.downcast::<PyDict>()?;
@@ -132,7 +149,9 @@ impl PBlockSimulator {
         let mut node_circuit_jsons: HashMap<usize, String> = HashMap::new();
 
         for &node in &nodes {
-            let circuit_py = circuits_dict.get_item(node)?.expect("node not in circuits dict");
+            let circuit_py = circuits_dict
+                .get_item(node)?
+                .expect("node not in circuits dict");
             let json: String = circuit_py.call_method0("model_dump_json")?.extract()?;
             node_circuit_jsons.insert(node, json);
 
@@ -143,16 +162,23 @@ impl PBlockSimulator {
 
             for (local_idx, inst_py) in instructions_list.iter().enumerate() {
                 let py_id = inst_py.as_ptr() as usize;
-                if seen_ids.contains(&py_id) { continue; }
+                if seen_ids.contains(&py_id) {
+                    continue;
+                }
                 seen_ids.insert(py_id);
                 let order = instr_index.get(&py_id).copied().unwrap_or_else(|| {
-                    let o = fallback_order; fallback_order += 1; o
+                    let o = fallback_order;
+                    fallback_order += 1;
+                    o
                 });
                 entries.push((order, node, local_idx));
             }
         }
         entries.sort_by_key(|e| e.0);
+        profile.py_extract = profiling::elapsed_since(t);
+        profile.instructions = entries.len();
 
+        let t = Instant::now();
         let node_circuits: HashMap<usize, Circuit> = node_circuit_jsons
             .iter()
             .map(|(&node, json)| {
@@ -164,56 +190,187 @@ impl PBlockSimulator {
                 Ok((node, c))
             })
             .collect::<PyResult<_>>()?;
+        profile.deserialize = profiling::elapsed_since(t);
+        profile.qubits = qpn.values().flatten().copied().max().map_or(0, |q| q + 1);
 
-        let num_cbits = node_circuits.values().map(|c| c.num_cbits()).max().unwrap_or(0);
+        let t = Instant::now();
+        let num_cbits = node_circuits
+            .values()
+            .map(|c| c.num_cbits())
+            .max()
+            .unwrap_or(0);
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
+        profile.setup = profiling::elapsed_since(t);
 
         // Pre-fuse consecutive single-qubit gates across the globally-sorted stream.
+        let t = Instant::now();
         let fused_entries = fuse_pblock_entries(&entries, &node_circuits);
+        profile.fusion = profiling::elapsed_since(t);
+        profile.fused_instructions = fused_entries.len();
 
         // ── Shot loop — parallel across shots via rayon ───────────────────────
-        let counts = py.allow_threads(|| -> Result<HashMap<String, usize>, String> {
-            (0..shots)
-                .into_par_iter()
-                .map(|i| -> Result<String, String> {
-                    let mut pool = BlockPool::new(&qpn);
-                    let mut cbits: HashMap<usize, i32> = HashMap::new();
-                    let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+        let t = Instant::now();
+        let (counts, shot_stats) = if profile_enabled {
+            py.allow_threads(|| -> Result<(HashMap<String, usize>, ShotStats), String> {
+                (0..shots)
+                    .into_par_iter()
+                    .map(|i| -> Result<(String, ShotStats), String> {
+                        let mut stats = ShotStats::default();
 
-                    for entry in &fused_entries {
-                        match entry {
-                            FusedPBlockEntry::Fused1Q { qubit, matrix } => {
-                                let block_idx = pool.ensure_single_block(&[*qubit]);
-                                let block = pool.blocks[block_idx].as_mut().unwrap();
-                                let local_q = block.local(*qubit);
-                                let n = block.qubits.len();
-                                apply_one_qubit_seq(&mut block.state, matrix, local_q, n, &[]);
-                            }
-                            FusedPBlockEntry::Original { node, local_idx } => {
-                                let inst = &node_circuits[node].instructions[*local_idx];
-                                let qubits = inst.qubits();
-                                if qubits.is_empty() { continue; }
-                                let block_idx = pool.ensure_single_block(&qubits);
-                                let block = pool.blocks[block_idx].as_mut().unwrap();
-                                dispatch_par(block, inst, &mut cbits, &mut rng)?;
+                        let t = Instant::now();
+                        let mut pool = BlockPool::new(&qpn);
+                        stats.block_pool_create.add(t.elapsed());
+
+                        let mut cbits: HashMap<usize, i32> = HashMap::new();
+                        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+
+                        for entry in &fused_entries {
+                            match entry {
+                                FusedPBlockEntry::Fused1Q { qubit, matrix } => {
+                                    let t = Instant::now();
+                                    let block_idx = pool.ensure_single_block(&[*qubit]);
+                                    stats.ensure_block.add(t.elapsed());
+
+                                    let block = pool.blocks[block_idx].as_mut().unwrap();
+                                    let local_q = block.local(*qubit);
+                                    let n = block.qubits.len();
+                                    let t = Instant::now();
+                                    apply_one_qubit_seq(&mut block.state, matrix, local_q, n, &[]);
+                                    stats.fused_one_qubit.add(t.elapsed());
+                                }
+                                FusedPBlockEntry::Original { node, local_idx } => {
+                                    let inst = &node_circuits[node].instructions[*local_idx];
+                                    let qubits = inst.qubits();
+                                    if qubits.is_empty() {
+                                        continue;
+                                    }
+
+                                    let t = Instant::now();
+                                    let block_idx = pool.ensure_single_block(&qubits);
+                                    stats.ensure_block.add(t.elapsed());
+
+                                    let block = pool.blocks[block_idx].as_mut().unwrap();
+                                    let t = Instant::now();
+                                    let result = dispatch_par(block, inst, &mut cbits, &mut rng);
+                                    let elapsed = t.elapsed();
+                                    stats.original_dispatch.add(elapsed);
+                                    match pblock_instruction_profile_bucket(inst) {
+                                        PBlockInstructionProfileBucket::SingleQ => {
+                                            stats.single_qubit.add(elapsed)
+                                        }
+                                        PBlockInstructionProfileBucket::MultiQ => {
+                                            stats.multi_qubit.add(elapsed)
+                                        }
+                                        PBlockInstructionProfileBucket::Measure => {
+                                            stats.measurement.add(elapsed)
+                                        }
+                                        PBlockInstructionProfileBucket::Reset => {
+                                            stats.reset.add(elapsed)
+                                        }
+                                        PBlockInstructionProfileBucket::Conditional => {
+                                            stats.conditional.add(elapsed)
+                                        }
+                                        PBlockInstructionProfileBucket::Noop => {}
+                                    }
+                                    result?;
+                                }
                             }
                         }
-                    }
 
-                    Ok(format_cbits(&cbits, num_cbits))
+                        let t = Instant::now();
+                        let key = format_cbits(&cbits, num_cbits);
+                        stats.format_counts_key.add(t.elapsed());
+                        Ok((key, stats))
+                    })
+                    .try_fold(
+                        || (HashMap::new(), ShotStats::default()),
+                        |(mut m, mut acc), r| {
+                            let (k, stats) = r?;
+                            *m.entry(k).or_insert(0) += 1;
+                            acc += stats;
+                            Ok((m, acc))
+                        },
+                    )
+                    .try_reduce(
+                        || (HashMap::new(), ShotStats::default()),
+                        |(mut a, mut acc_a), (b, acc_b)| {
+                            for (k, v) in b {
+                                *a.entry(k).or_insert(0) += v;
+                            }
+                            acc_a += acc_b;
+                            Ok((a, acc_a))
+                        },
+                    )
+            })
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?
+        } else {
+            let counts = py
+                .allow_threads(|| -> Result<HashMap<String, usize>, String> {
+                    (0..shots)
+                        .into_par_iter()
+                        .map(|i| -> Result<String, String> {
+                            let mut pool = BlockPool::new(&qpn);
+                            let mut cbits: HashMap<usize, i32> = HashMap::new();
+                            let mut rng =
+                                ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+
+                            for entry in &fused_entries {
+                                match entry {
+                                    FusedPBlockEntry::Fused1Q { qubit, matrix } => {
+                                        let block_idx = pool.ensure_single_block(&[*qubit]);
+                                        let block = pool.blocks[block_idx].as_mut().unwrap();
+                                        let local_q = block.local(*qubit);
+                                        let n = block.qubits.len();
+                                        apply_one_qubit_seq(
+                                            &mut block.state,
+                                            matrix,
+                                            local_q,
+                                            n,
+                                            &[],
+                                        );
+                                    }
+                                    FusedPBlockEntry::Original { node, local_idx } => {
+                                        let inst = &node_circuits[node].instructions[*local_idx];
+                                        let qubits = inst.qubits();
+                                        if qubits.is_empty() {
+                                            continue;
+                                        }
+                                        let block_idx = pool.ensure_single_block(&qubits);
+                                        let block = pool.blocks[block_idx].as_mut().unwrap();
+                                        dispatch_par(block, inst, &mut cbits, &mut rng)?;
+                                    }
+                                }
+                            }
+
+                            Ok(format_cbits(&cbits, num_cbits))
+                        })
+                        .try_fold(HashMap::new, |mut m, r| {
+                            let k = r?;
+                            *m.entry(k).or_insert(0) += 1;
+                            Ok(m)
+                        })
+                        .try_reduce(HashMap::new, |mut a, b| {
+                            for (k, v) in b {
+                                *a.entry(k).or_insert(0) += v;
+                            }
+                            Ok(a)
+                        })
                 })
-                .try_fold(
-                    HashMap::new,
-                    |mut m, r| { let k = r?; *m.entry(k).or_insert(0) += 1; Ok(m) },
-                )
-                .try_reduce(
-                    HashMap::new,
-                    |mut a, b| { for (k, v) in b { *a.entry(k).or_insert(0) += v; } Ok(a) },
-                )
-        }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            (counts, ShotStats::default())
+        };
+        profile.shot_loop_wall = profiling::elapsed_since(t);
+        profile.shot_stats = shot_stats;
 
+        let t = Instant::now();
         let d = PyDict::new_bound(py);
-        for (k, v) in &counts { d.set_item(k, v)?; }
+        for (k, v) in &counts {
+            d.set_item(k, v)?;
+        }
+        profile.result_dict = profiling::elapsed_since(t);
+        if profile_enabled {
+            profiling::print(&profile);
+        }
         Ok(d.into())
     }
 
@@ -233,8 +390,7 @@ impl PBlockSimulator {
         }
 
         // ── 2. Extract qubits_per_node: dict[int, list[int]] ─────────────────
-        let qpn: HashMap<usize, Vec<usize>> =
-            distributed.getattr("qubits_per_node")?.extract()?;
+        let qpn: HashMap<usize, Vec<usize>> = distributed.getattr("qubits_per_node")?.extract()?;
 
         // ── 3. Iterate node circuits in sorted order ──────────────────────────
         let circuits_py = distributed.getattr("circuits")?;
@@ -314,22 +470,32 @@ impl PBlockSimulator {
             let mut j = cursor;
 
             loop {
-                if j >= entries.len() { break; }
+                if j >= entries.len() {
+                    break;
+                }
                 let (_, node, local_idx) = entries[j];
                 let inst = &node_circuits[&node].instructions[local_idx];
                 let qubits = inst.qubits();
-                if qubits.is_empty() { j += 1; continue; }
+                if qubits.is_empty() {
+                    j += 1;
+                    continue;
+                }
 
                 // Which blocks does this instruction touch?
-                let inst_blocks: Vec<usize> = qubits.iter()
+                let inst_blocks: Vec<usize> = qubits
+                    .iter()
                     .filter_map(|q| pool.qubit_to_block.get(q).copied())
                     .collect::<HashSet<_>>()
                     .into_iter()
                     .collect();
 
-                if inst_blocks.len() != 1 { break; } // needs merge
+                if inst_blocks.len() != 1 {
+                    break;
+                } // needs merge
                 let blk = inst_blocks[0];
-                if epoch_block_set.contains(&blk) { break; } // same block twice
+                if epoch_block_set.contains(&blk) {
+                    break;
+                } // same block twice
 
                 epoch.push((j, blk));
                 epoch_block_set.insert(blk);
@@ -345,9 +511,16 @@ impl PBlockSimulator {
                 // SAFETY: each iteration accesses a unique block_idx, so no aliasing.
                 // We split `per_cbits` entries and pair each with a unique &mut Block.
                 let raw = pool.blocks.as_mut_ptr();
-                type EpochTask<'a> = (&'a mut Option<Block>, &'a mut HashMap<usize, i32>, &'a Instruction, u64);
-                let mut tasks: Vec<EpochTask<'_>> =
-                    per_cbits.iter_mut().enumerate().map(|(k, local_cbits)| {
+                type EpochTask<'a> = (
+                    &'a mut Option<Block>,
+                    &'a mut HashMap<usize, i32>,
+                    &'a Instruction,
+                    u64,
+                );
+                let mut tasks: Vec<EpochTask<'_>> = per_cbits
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(k, local_cbits)| {
                         let (entry_idx, block_idx) = epoch[k];
                         let gate_seed = gate_seeds[k];
                         let (_, node, local_idx) = entries[entry_idx];
@@ -355,13 +528,16 @@ impl PBlockSimulator {
                         // SAFETY: epoch guarantees distinct block_idx for each k
                         let opt_block: &mut Option<Block> = unsafe { &mut *raw.add(block_idx) };
                         (opt_block, local_cbits, inst, gate_seed)
-                    }).collect();
+                    })
+                    .collect();
 
-                tasks.par_iter_mut().for_each(|(opt_block, local_cbits, inst, gate_seed)| {
-                    let block = opt_block.as_mut().expect("block should exist");
-                    let mut gate_rng = ChaCha8Rng::seed_from_u64(*gate_seed);
-                    dispatch_par(block, inst, local_cbits, &mut gate_rng).unwrap();
-                });
+                tasks
+                    .par_iter_mut()
+                    .for_each(|(opt_block, local_cbits, inst, gate_seed)| {
+                        let block = opt_block.as_mut().expect("block should exist");
+                        let mut gate_rng = ChaCha8Rng::seed_from_u64(*gate_seed);
+                        dispatch_par(block, inst, local_cbits, &mut gate_rng).unwrap();
+                    });
 
                 for local in per_cbits {
                     cbits.extend(local);
@@ -395,6 +571,68 @@ impl PBlockSimulator {
     }
 }
 
+enum PBlockInstructionProfileBucket {
+    SingleQ,
+    MultiQ,
+    Measure,
+    Reset,
+    Conditional,
+    Noop,
+}
+
+fn pblock_instruction_profile_bucket(inst: &Instruction) -> PBlockInstructionProfileBucket {
+    match inst {
+        Instruction::Id { .. }
+        | Instruction::U0 { .. }
+        | Instruction::Barrier
+        | Instruction::Classical { .. } => PBlockInstructionProfileBucket::Noop,
+        Instruction::X { .. }
+        | Instruction::Y { .. }
+        | Instruction::Z { .. }
+        | Instruction::H { .. }
+        | Instruction::S { .. }
+        | Instruction::Sdg { .. }
+        | Instruction::T { .. }
+        | Instruction::Tdg { .. }
+        | Instruction::Sx { .. }
+        | Instruction::Sxdg { .. }
+        | Instruction::U3 { .. }
+        | Instruction::U2 { .. }
+        | Instruction::U1 { .. }
+        | Instruction::U { .. }
+        | Instruction::P { .. }
+        | Instruction::Rx { .. }
+        | Instruction::Ry { .. }
+        | Instruction::Rz { .. } => PBlockInstructionProfileBucket::SingleQ,
+        Instruction::Measure { .. } => PBlockInstructionProfileBucket::Measure,
+        Instruction::Reset { .. } => PBlockInstructionProfileBucket::Reset,
+        Instruction::Conditional { .. } => PBlockInstructionProfileBucket::Conditional,
+        Instruction::Cx { .. }
+        | Instruction::Cz { .. }
+        | Instruction::Cy { .. }
+        | Instruction::Ch { .. }
+        | Instruction::Swap { .. }
+        | Instruction::Csx { .. }
+        | Instruction::Crx { .. }
+        | Instruction::Cry { .. }
+        | Instruction::Crz { .. }
+        | Instruction::Cu1 { .. }
+        | Instruction::Cp { .. }
+        | Instruction::Cu3 { .. }
+        | Instruction::Cu { .. }
+        | Instruction::Rxx { .. }
+        | Instruction::Rzz { .. }
+        | Instruction::Ccx { .. }
+        | Instruction::Cswap { .. }
+        | Instruction::Rccx { .. }
+        | Instruction::Rc3x { .. }
+        | Instruction::C3x { .. }
+        | Instruction::C3sqrtx { .. }
+        | Instruction::C4x { .. }
+        | Instruction::Gate { .. } => PBlockInstructionProfileBucket::MultiQ,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Instruction dispatcher
 // ---------------------------------------------------------------------------
@@ -410,9 +648,18 @@ fn dispatch(
     match inst {
         Instruction::Id { .. } | Instruction::U0 { .. } => {}
 
-        Instruction::X { qubit } => { let q = block.local(*qubit); apply_one_qubit(&mut block.state, &gates::X, q, n, &[]); }
-        Instruction::Y { qubit } => { let q = block.local(*qubit); apply_one_qubit(&mut block.state, &gates::Y, q, n, &[]); }
-        Instruction::Z { qubit } => { let q = block.local(*qubit); apply_one_qubit(&mut block.state, &gates::Z, q, n, &[]); }
+        Instruction::X { qubit } => {
+            let q = block.local(*qubit);
+            apply_one_qubit(&mut block.state, &gates::X, q, n, &[]);
+        }
+        Instruction::Y { qubit } => {
+            let q = block.local(*qubit);
+            apply_one_qubit(&mut block.state, &gates::Y, q, n, &[]);
+        }
+        Instruction::Z { qubit } => {
+            let q = block.local(*qubit);
+            apply_one_qubit(&mut block.state, &gates::Z, q, n, &[]);
+        }
         Instruction::H { qubit } => {
             let q = block.local(*qubit);
             apply_one_qubit(&mut block.state, &gates::h(), q, n, &[]);
@@ -442,7 +689,12 @@ fn dispatch(
             apply_one_qubit(&mut block.state, &gates::sxdg(), q, n, &[]);
         }
 
-        Instruction::U3 { qubit, theta, phi, lam } => {
+        Instruction::U3 {
+            qubit,
+            theta,
+            phi,
+            lam,
+        } => {
             let q = block.local(*qubit);
             apply_one_qubit(&mut block.state, &gates::u3(*theta, *phi, *lam), q, n, &[]);
         }
@@ -454,7 +706,12 @@ fn dispatch(
             let q = block.local(*qubit);
             apply_one_qubit(&mut block.state, &gates::u1(*lam), q, n, &[]);
         }
-        Instruction::U { qubit, theta, phi, lam } => {
+        Instruction::U {
+            qubit,
+            theta,
+            phi,
+            lam,
+        } => {
             let q = block.local(*qubit);
             apply_one_qubit(&mut block.state, &gates::u(*theta, *phi, *lam), q, n, &[]);
         }
@@ -499,33 +756,76 @@ fn dispatch(
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit(&mut block.state, &m4(gates::csx()), &qs, n);
         }
-        Instruction::Crx { control, target, theta } => {
+        Instruction::Crx {
+            control,
+            target,
+            theta,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit(&mut block.state, &m4(gates::crx(*theta)), &qs, n);
         }
-        Instruction::Cry { control, target, theta } => {
+        Instruction::Cry {
+            control,
+            target,
+            theta,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit(&mut block.state, &m4(gates::cry(*theta)), &qs, n);
         }
-        Instruction::Crz { control, target, lam } => {
+        Instruction::Crz {
+            control,
+            target,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit(&mut block.state, &m4(gates::crz(*lam)), &qs, n);
         }
-        Instruction::Cu1 { control, target, lam } => {
+        Instruction::Cu1 {
+            control,
+            target,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit(&mut block.state, &m4(gates::cu1(*lam)), &qs, n);
         }
-        Instruction::Cp { control, target, lam } => {
+        Instruction::Cp {
+            control,
+            target,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit(&mut block.state, &m4(gates::cp(*lam)), &qs, n);
         }
-        Instruction::Cu3 { control, target, theta, phi, lam } => {
+        Instruction::Cu3 {
+            control,
+            target,
+            theta,
+            phi,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit(&mut block.state, &m4(gates::cu3(*theta, *phi, *lam)), &qs, n);
+            apply_n_qubit(
+                &mut block.state,
+                &m4(gates::cu3(*theta, *phi, *lam)),
+                &qs,
+                n,
+            );
         }
-        Instruction::Cu { control, target, theta, phi, lam, gamma } => {
+        Instruction::Cu {
+            control,
+            target,
+            theta,
+            phi,
+            lam,
+            gamma,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit(&mut block.state, &m4(gates::cu(*theta, *phi, *lam, *gamma)), &qs, n);
+            apply_n_qubit(
+                &mut block.state,
+                &m4(gates::cu(*theta, *phi, *lam, *gamma)),
+                &qs,
+                n,
+            );
         }
         Instruction::Rxx { a, b, theta } => {
             let qs = [block.local(*a), block.local(*b)];
@@ -536,32 +836,98 @@ fn dispatch(
             apply_n_qubit(&mut block.state, &m4(gates::rzz(*theta)), &qs, n);
         }
 
-        Instruction::Ccx { control1, control2, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*target)];
+        Instruction::Ccx {
+            control1,
+            control2,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*target),
+            ];
             apply_n_qubit(&mut block.state, &m8(gates::ccx()), &qs, n);
         }
-        Instruction::Cswap { control, target1, target2 } => {
-            let qs = [block.local(*control), block.local(*target1), block.local(*target2)];
+        Instruction::Cswap {
+            control,
+            target1,
+            target2,
+        } => {
+            let qs = [
+                block.local(*control),
+                block.local(*target1),
+                block.local(*target2),
+            ];
             apply_n_qubit(&mut block.state, &m8(gates::cswap()), &qs, n);
         }
-        Instruction::Rccx { control1, control2, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*target)];
+        Instruction::Rccx {
+            control1,
+            control2,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*target),
+            ];
             apply_n_qubit(&mut block.state, &m8(gates::rccx()), &qs, n);
         }
-        Instruction::Rc3x { control1, control2, control3, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*target)];
+        Instruction::Rc3x {
+            control1,
+            control2,
+            control3,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*target),
+            ];
             apply_n_qubit(&mut block.state, &m16(gates::rc3x()), &qs, n);
         }
-        Instruction::C3x { control1, control2, control3, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*target)];
+        Instruction::C3x {
+            control1,
+            control2,
+            control3,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*target),
+            ];
             apply_n_qubit(&mut block.state, &m16(gates::c3x()), &qs, n);
         }
-        Instruction::C3sqrtx { control1, control2, control3, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*target)];
+        Instruction::C3sqrtx {
+            control1,
+            control2,
+            control3,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*target),
+            ];
             apply_n_qubit(&mut block.state, &m16(gates::c3sqrtx()), &qs, n);
         }
-        Instruction::C4x { control1, control2, control3, control4, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*control4), block.local(*target)];
+        Instruction::C4x {
+            control1,
+            control2,
+            control3,
+            control4,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*control4),
+                block.local(*target),
+            ];
             apply_n_qubit(&mut block.state, &m32(gates::c4x()), &qs, n);
         }
 
@@ -652,9 +1018,18 @@ fn dispatch_par(
     match inst {
         Instruction::Id { .. } | Instruction::U0 { .. } => {}
 
-        Instruction::X { qubit } => { let q = block.local(*qubit); apply_one_qubit_seq(&mut block.state, &gates::X, q, n, &[]); }
-        Instruction::Y { qubit } => { let q = block.local(*qubit); apply_one_qubit_seq(&mut block.state, &gates::Y, q, n, &[]); }
-        Instruction::Z { qubit } => { let q = block.local(*qubit); apply_one_qubit_seq(&mut block.state, &gates::Z, q, n, &[]); }
+        Instruction::X { qubit } => {
+            let q = block.local(*qubit);
+            apply_one_qubit_seq(&mut block.state, &gates::X, q, n, &[]);
+        }
+        Instruction::Y { qubit } => {
+            let q = block.local(*qubit);
+            apply_one_qubit_seq(&mut block.state, &gates::Y, q, n, &[]);
+        }
+        Instruction::Z { qubit } => {
+            let q = block.local(*qubit);
+            apply_one_qubit_seq(&mut block.state, &gates::Z, q, n, &[]);
+        }
         Instruction::H { qubit } => {
             let q = block.local(*qubit);
             apply_one_qubit_seq(&mut block.state, &gates::h(), q, n, &[]);
@@ -684,7 +1059,12 @@ fn dispatch_par(
             apply_one_qubit_seq(&mut block.state, &gates::sxdg(), q, n, &[]);
         }
 
-        Instruction::U3 { qubit, theta, phi, lam } => {
+        Instruction::U3 {
+            qubit,
+            theta,
+            phi,
+            lam,
+        } => {
             let q = block.local(*qubit);
             apply_one_qubit_seq(&mut block.state, &gates::u3(*theta, *phi, *lam), q, n, &[]);
         }
@@ -696,7 +1076,12 @@ fn dispatch_par(
             let q = block.local(*qubit);
             apply_one_qubit_seq(&mut block.state, &gates::u1(*lam), q, n, &[]);
         }
-        Instruction::U { qubit, theta, phi, lam } => {
+        Instruction::U {
+            qubit,
+            theta,
+            phi,
+            lam,
+        } => {
             let q = block.local(*qubit);
             apply_one_qubit_seq(&mut block.state, &gates::u(*theta, *phi, *lam), q, n, &[]);
         }
@@ -741,33 +1126,76 @@ fn dispatch_par(
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit_seq(&mut block.state, &m4(gates::csx()), &qs, n);
         }
-        Instruction::Crx { control, target, theta } => {
+        Instruction::Crx {
+            control,
+            target,
+            theta,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit_seq(&mut block.state, &m4(gates::crx(*theta)), &qs, n);
         }
-        Instruction::Cry { control, target, theta } => {
+        Instruction::Cry {
+            control,
+            target,
+            theta,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit_seq(&mut block.state, &m4(gates::cry(*theta)), &qs, n);
         }
-        Instruction::Crz { control, target, lam } => {
+        Instruction::Crz {
+            control,
+            target,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit_seq(&mut block.state, &m4(gates::crz(*lam)), &qs, n);
         }
-        Instruction::Cu1 { control, target, lam } => {
+        Instruction::Cu1 {
+            control,
+            target,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit_seq(&mut block.state, &m4(gates::cu1(*lam)), &qs, n);
         }
-        Instruction::Cp { control, target, lam } => {
+        Instruction::Cp {
+            control,
+            target,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
             apply_n_qubit_seq(&mut block.state, &m4(gates::cp(*lam)), &qs, n);
         }
-        Instruction::Cu3 { control, target, theta, phi, lam } => {
+        Instruction::Cu3 {
+            control,
+            target,
+            theta,
+            phi,
+            lam,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit_seq(&mut block.state, &m4(gates::cu3(*theta, *phi, *lam)), &qs, n);
+            apply_n_qubit_seq(
+                &mut block.state,
+                &m4(gates::cu3(*theta, *phi, *lam)),
+                &qs,
+                n,
+            );
         }
-        Instruction::Cu { control, target, theta, phi, lam, gamma } => {
+        Instruction::Cu {
+            control,
+            target,
+            theta,
+            phi,
+            lam,
+            gamma,
+        } => {
             let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit_seq(&mut block.state, &m4(gates::cu(*theta, *phi, *lam, *gamma)), &qs, n);
+            apply_n_qubit_seq(
+                &mut block.state,
+                &m4(gates::cu(*theta, *phi, *lam, *gamma)),
+                &qs,
+                n,
+            );
         }
         Instruction::Rxx { a, b, theta } => {
             let qs = [block.local(*a), block.local(*b)];
@@ -778,32 +1206,98 @@ fn dispatch_par(
             apply_n_qubit_seq(&mut block.state, &m4(gates::rzz(*theta)), &qs, n);
         }
 
-        Instruction::Ccx { control1, control2, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*target)];
+        Instruction::Ccx {
+            control1,
+            control2,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*target),
+            ];
             apply_n_qubit_seq(&mut block.state, &m8(gates::ccx()), &qs, n);
         }
-        Instruction::Cswap { control, target1, target2 } => {
-            let qs = [block.local(*control), block.local(*target1), block.local(*target2)];
+        Instruction::Cswap {
+            control,
+            target1,
+            target2,
+        } => {
+            let qs = [
+                block.local(*control),
+                block.local(*target1),
+                block.local(*target2),
+            ];
             apply_n_qubit_seq(&mut block.state, &m8(gates::cswap()), &qs, n);
         }
-        Instruction::Rccx { control1, control2, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*target)];
+        Instruction::Rccx {
+            control1,
+            control2,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*target),
+            ];
             apply_n_qubit_seq(&mut block.state, &m8(gates::rccx()), &qs, n);
         }
-        Instruction::Rc3x { control1, control2, control3, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*target)];
+        Instruction::Rc3x {
+            control1,
+            control2,
+            control3,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*target),
+            ];
             apply_n_qubit_seq(&mut block.state, &m16(gates::rc3x()), &qs, n);
         }
-        Instruction::C3x { control1, control2, control3, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*target)];
+        Instruction::C3x {
+            control1,
+            control2,
+            control3,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*target),
+            ];
             apply_n_qubit_seq(&mut block.state, &m16(gates::c3x()), &qs, n);
         }
-        Instruction::C3sqrtx { control1, control2, control3, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*target)];
+        Instruction::C3sqrtx {
+            control1,
+            control2,
+            control3,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*target),
+            ];
             apply_n_qubit_seq(&mut block.state, &m16(gates::c3sqrtx()), &qs, n);
         }
-        Instruction::C4x { control1, control2, control3, control4, target } => {
-            let qs = [block.local(*control1), block.local(*control2), block.local(*control3), block.local(*control4), block.local(*target)];
+        Instruction::C4x {
+            control1,
+            control2,
+            control3,
+            control4,
+            target,
+        } => {
+            let qs = [
+                block.local(*control1),
+                block.local(*control2),
+                block.local(*control3),
+                block.local(*control4),
+                block.local(*target),
+            ];
             apply_n_qubit_seq(&mut block.state, &m32(gates::c4x()), &qs, n);
         }
 
@@ -835,10 +1329,9 @@ fn dispatch_par(
                     // opaque Qiskit subcircuit — no-op for performance benchmarking
                 }
                 "teleport" => {
-                    return Err(
-                        "Symbolic 'teleport' gate cannot be simulated natively. \
-                         Distribute with lowered=True to get a decomposed circuit.".to_string()
-                    );
+                    return Err("Symbolic 'teleport' gate cannot be simulated natively. \
+                         Distribute with lowered=True to get a decomposed circuit."
+                        .to_string());
                 }
                 other => {
                     return Err(format!("Unsupported gate in pblock simulator: {other:?}"));

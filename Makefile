@@ -1,4 +1,4 @@
-.PHONY: build publish test perf lint check suite
+.PHONY: build publish test perf perf-profile lint check suite
 
 DIST_DIR := dist
 REPOSITORY ?= testpypi
@@ -27,6 +27,10 @@ suite:
 perf:
 	uvx --python 3.11 maturin develop --skip-install --release
 	uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
+
+perf-profile:
+	uvx --python 3.11 maturin develop --skip-install --release
+	DQSIM_PROFILE_SHOTS=1 uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
 
 build:
 	rm -rf $(DIST_DIR)

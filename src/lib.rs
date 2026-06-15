@@ -5,6 +5,7 @@ mod distributed;
 mod engine;
 mod gates;
 mod monolithic;
+mod profiling;
 mod simulator;
 mod types;
 

@@ -15,12 +15,12 @@ circuits:
   - name: qft_n4
     nodes: 2
     qubits_per_node: 2
-  - name: bell_n4
-    nodes: 2
-    qubits_per_node: 2
-  - name: qaoa_n6
-    nodes: 3
-    qubits_per_node: 3
+  # - name: bell_n4
+  #   nodes: 2
+  #   qubits_per_node: 2
+  # - name: qaoa_n6
+  #   nodes: 3
+  #   qubits_per_node: 3
   # - name: qpe_n9
   #   nodes: 3
   #   qubits_per_node: 4

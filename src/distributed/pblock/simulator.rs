@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
@@ -13,7 +12,7 @@ use crate::engine::{
     measure_qubit, measure_qubit_seq,
 };
 use crate::gates;
-use crate::profiling::{self, ShotStats, ShotsProfile};
+use crate::profiling::ShotLoopProfiler;
 use crate::types::{format_cbits, fuse_pblock_entries, Circuit, FusedPBlockEntry, Instruction};
 
 use super::model::{m16, m32, m4, m8, Block, BlockPool, C};
@@ -116,15 +115,7 @@ impl PBlockSimulator {
         distributed: &Bound<PyAny>,
         shots: usize,
     ) -> PyResult<PyObject> {
-        let profile_enabled = profiling::enabled();
-        let mut profile = ShotsProfile {
-            mode: "pblock",
-            shots,
-            ..ShotsProfile::default()
-        };
-
         // ── One-time setup (identical to simulate()) ──────────────────────────
-        let t = Instant::now();
         let instr_index_py = distributed.getattr("_instruction_index")?;
         let instr_index_dict = instr_index_py.downcast::<PyDict>()?;
         let mut instr_index: HashMap<usize, i64> = HashMap::new();
@@ -175,10 +166,7 @@ impl PBlockSimulator {
             }
         }
         entries.sort_by_key(|e| e.0);
-        profile.py_extract = profiling::elapsed_since(t);
-        profile.instructions = entries.len();
 
-        let t = Instant::now();
         let node_circuits: HashMap<usize, Circuit> = node_circuit_jsons
             .iter()
             .map(|(&node, json)| {
@@ -190,53 +178,37 @@ impl PBlockSimulator {
                 Ok((node, c))
             })
             .collect::<PyResult<_>>()?;
-        profile.deserialize = profiling::elapsed_since(t);
-        profile.qubits = qpn.values().flatten().copied().max().map_or(0, |q| q + 1);
 
-        let t = Instant::now();
         let num_cbits = node_circuits
             .values()
             .map(|c| c.num_cbits())
             .max()
             .unwrap_or(0);
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
-        profile.setup = profiling::elapsed_since(t);
+        let n = qpn.values().flatten().copied().max().map_or(0, |q| q + 1);
 
         // Pre-fuse consecutive single-qubit gates across the globally-sorted stream.
-        let t = Instant::now();
         let fused_entries = fuse_pblock_entries(&entries, &node_circuits);
-        profile.fusion = profiling::elapsed_since(t);
-        profile.fused_instructions = fused_entries.len();
 
         // ── Shot loop — parallel across shots via rayon ───────────────────────
-        let t = Instant::now();
-        let (counts, shot_stats) = if profile_enabled {
-            py.allow_threads(|| -> Result<(HashMap<String, usize>, ShotStats), String> {
+        let shot_loop_profiler = ShotLoopProfiler::start("pblock", n, shots, fused_entries.len());
+        let counts = py
+            .allow_threads(|| -> Result<HashMap<String, usize>, String> {
                 (0..shots)
                     .into_par_iter()
-                    .map(|i| -> Result<(String, ShotStats), String> {
-                        let mut stats = ShotStats::default();
-
-                        let t = Instant::now();
+                    .map(|i| -> Result<String, String> {
                         let mut pool = BlockPool::new(&qpn);
-                        stats.block_pool_create.add(t.elapsed());
-
                         let mut cbits: HashMap<usize, i32> = HashMap::new();
                         let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
 
                         for entry in &fused_entries {
                             match entry {
                                 FusedPBlockEntry::Fused1Q { qubit, matrix } => {
-                                    let t = Instant::now();
                                     let block_idx = pool.ensure_single_block(&[*qubit]);
-                                    stats.ensure_block.add(t.elapsed());
-
                                     let block = pool.blocks[block_idx].as_mut().unwrap();
                                     let local_q = block.local(*qubit);
                                     let n = block.qubits.len();
-                                    let t = Instant::now();
                                     apply_one_qubit_seq(&mut block.state, matrix, local_q, n, &[]);
-                                    stats.fused_one_qubit.add(t.elapsed());
                                 }
                                 FusedPBlockEntry::Original { node, local_idx } => {
                                     let inst = &node_circuits[node].instructions[*local_idx];
@@ -245,131 +217,35 @@ impl PBlockSimulator {
                                         continue;
                                     }
 
-                                    let t = Instant::now();
                                     let block_idx = pool.ensure_single_block(&qubits);
-                                    stats.ensure_block.add(t.elapsed());
-
                                     let block = pool.blocks[block_idx].as_mut().unwrap();
-                                    let t = Instant::now();
-                                    let result = dispatch_par(block, inst, &mut cbits, &mut rng);
-                                    let elapsed = t.elapsed();
-                                    stats.original_dispatch.add(elapsed);
-                                    match pblock_instruction_profile_bucket(inst) {
-                                        PBlockInstructionProfileBucket::SingleQ => {
-                                            stats.single_qubit.add(elapsed)
-                                        }
-                                        PBlockInstructionProfileBucket::MultiQ => {
-                                            stats.multi_qubit.add(elapsed)
-                                        }
-                                        PBlockInstructionProfileBucket::Measure => {
-                                            stats.measurement.add(elapsed)
-                                        }
-                                        PBlockInstructionProfileBucket::Reset => {
-                                            stats.reset.add(elapsed)
-                                        }
-                                        PBlockInstructionProfileBucket::Conditional => {
-                                            stats.conditional.add(elapsed)
-                                        }
-                                        PBlockInstructionProfileBucket::Noop => {}
-                                    }
-                                    result?;
+                                    dispatch_par(block, inst, &mut cbits, &mut rng)?;
                                 }
                             }
                         }
 
-                        let t = Instant::now();
-                        let key = format_cbits(&cbits, num_cbits);
-                        stats.format_counts_key.add(t.elapsed());
-                        Ok((key, stats))
+                        Ok(format_cbits(&cbits, num_cbits))
                     })
-                    .try_fold(
-                        || (HashMap::new(), ShotStats::default()),
-                        |(mut m, mut acc), r| {
-                            let (k, stats) = r?;
-                            *m.entry(k).or_insert(0) += 1;
-                            acc += stats;
-                            Ok((m, acc))
-                        },
-                    )
-                    .try_reduce(
-                        || (HashMap::new(), ShotStats::default()),
-                        |(mut a, mut acc_a), (b, acc_b)| {
-                            for (k, v) in b {
-                                *a.entry(k).or_insert(0) += v;
-                            }
-                            acc_a += acc_b;
-                            Ok((a, acc_a))
-                        },
-                    )
+                    .try_fold(HashMap::new, |mut m, r| {
+                        let k = r?;
+                        *m.entry(k).or_insert(0) += 1;
+                        Ok(m)
+                    })
+                    .try_reduce(HashMap::new, |mut a, b| {
+                        for (k, v) in b {
+                            *a.entry(k).or_insert(0) += v;
+                        }
+                        Ok(a)
+                    })
             })
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?
-        } else {
-            let counts = py
-                .allow_threads(|| -> Result<HashMap<String, usize>, String> {
-                    (0..shots)
-                        .into_par_iter()
-                        .map(|i| -> Result<String, String> {
-                            let mut pool = BlockPool::new(&qpn);
-                            let mut cbits: HashMap<usize, i32> = HashMap::new();
-                            let mut rng =
-                                ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        if let Some(profiler) = shot_loop_profiler {
+            profiler.finish();
+        }
 
-                            for entry in &fused_entries {
-                                match entry {
-                                    FusedPBlockEntry::Fused1Q { qubit, matrix } => {
-                                        let block_idx = pool.ensure_single_block(&[*qubit]);
-                                        let block = pool.blocks[block_idx].as_mut().unwrap();
-                                        let local_q = block.local(*qubit);
-                                        let n = block.qubits.len();
-                                        apply_one_qubit_seq(
-                                            &mut block.state,
-                                            matrix,
-                                            local_q,
-                                            n,
-                                            &[],
-                                        );
-                                    }
-                                    FusedPBlockEntry::Original { node, local_idx } => {
-                                        let inst = &node_circuits[node].instructions[*local_idx];
-                                        let qubits = inst.qubits();
-                                        if qubits.is_empty() {
-                                            continue;
-                                        }
-                                        let block_idx = pool.ensure_single_block(&qubits);
-                                        let block = pool.blocks[block_idx].as_mut().unwrap();
-                                        dispatch_par(block, inst, &mut cbits, &mut rng)?;
-                                    }
-                                }
-                            }
-
-                            Ok(format_cbits(&cbits, num_cbits))
-                        })
-                        .try_fold(HashMap::new, |mut m, r| {
-                            let k = r?;
-                            *m.entry(k).or_insert(0) += 1;
-                            Ok(m)
-                        })
-                        .try_reduce(HashMap::new, |mut a, b| {
-                            for (k, v) in b {
-                                *a.entry(k).or_insert(0) += v;
-                            }
-                            Ok(a)
-                        })
-                })
-                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-            (counts, ShotStats::default())
-        };
-        profile.shot_loop_wall = profiling::elapsed_since(t);
-        profile.shot_stats = shot_stats;
-
-        let t = Instant::now();
         let d = PyDict::new_bound(py);
         for (k, v) in &counts {
             d.set_item(k, v)?;
-        }
-        profile.result_dict = profiling::elapsed_since(t);
-        if profile_enabled {
-            profiling::print(&profile);
         }
         Ok(d.into())
     }
@@ -568,68 +444,6 @@ impl PBlockSimulator {
             phys_qubits,
             cbits,
         })
-    }
-}
-
-enum PBlockInstructionProfileBucket {
-    SingleQ,
-    MultiQ,
-    Measure,
-    Reset,
-    Conditional,
-    Noop,
-}
-
-fn pblock_instruction_profile_bucket(inst: &Instruction) -> PBlockInstructionProfileBucket {
-    match inst {
-        Instruction::Id { .. }
-        | Instruction::U0 { .. }
-        | Instruction::Barrier
-        | Instruction::Classical { .. } => PBlockInstructionProfileBucket::Noop,
-        Instruction::X { .. }
-        | Instruction::Y { .. }
-        | Instruction::Z { .. }
-        | Instruction::H { .. }
-        | Instruction::S { .. }
-        | Instruction::Sdg { .. }
-        | Instruction::T { .. }
-        | Instruction::Tdg { .. }
-        | Instruction::Sx { .. }
-        | Instruction::Sxdg { .. }
-        | Instruction::U3 { .. }
-        | Instruction::U2 { .. }
-        | Instruction::U1 { .. }
-        | Instruction::U { .. }
-        | Instruction::P { .. }
-        | Instruction::Rx { .. }
-        | Instruction::Ry { .. }
-        | Instruction::Rz { .. } => PBlockInstructionProfileBucket::SingleQ,
-        Instruction::Measure { .. } => PBlockInstructionProfileBucket::Measure,
-        Instruction::Reset { .. } => PBlockInstructionProfileBucket::Reset,
-        Instruction::Conditional { .. } => PBlockInstructionProfileBucket::Conditional,
-        Instruction::Cx { .. }
-        | Instruction::Cz { .. }
-        | Instruction::Cy { .. }
-        | Instruction::Ch { .. }
-        | Instruction::Swap { .. }
-        | Instruction::Csx { .. }
-        | Instruction::Crx { .. }
-        | Instruction::Cry { .. }
-        | Instruction::Crz { .. }
-        | Instruction::Cu1 { .. }
-        | Instruction::Cp { .. }
-        | Instruction::Cu3 { .. }
-        | Instruction::Cu { .. }
-        | Instruction::Rxx { .. }
-        | Instruction::Rzz { .. }
-        | Instruction::Ccx { .. }
-        | Instruction::Cswap { .. }
-        | Instruction::Rccx { .. }
-        | Instruction::Rc3x { .. }
-        | Instruction::C3x { .. }
-        | Instruction::C3sqrtx { .. }
-        | Instruction::C4x { .. }
-        | Instruction::Gate { .. } => PBlockInstructionProfileBucket::MultiQ,
     }
 }
 

@@ -14,7 +14,7 @@ use crate::engine::{
     measure_qubit, measure_qubit_seq, sample_counts,
 };
 use crate::gates;
-use crate::profiling::{self, ShotStats, ShotsProfile};
+use crate::profiling::ShotLoopProfiler;
 use crate::types::{format_cbits, fuse_circuit, Circuit, FusedInstruction, Instruction};
 
 type C = Complex64;
@@ -212,130 +212,59 @@ impl StatevectorSimulator {
         circuit: &Bound<PyAny>,
         shots: usize,
     ) -> PyResult<PyObject> {
-        let profile_enabled = profiling::enabled();
-        let mut profile = ShotsProfile {
-            mode: "statevector",
-            shots,
-            ..ShotsProfile::default()
-        };
-
-        let t = Instant::now();
         let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
-        profile.py_extract = profiling::elapsed_since(t);
 
-        let t = Instant::now();
         let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
         })?;
-        profile.deserialize = profiling::elapsed_since(t);
 
         let n = rust_circuit.num_qubits();
         let num_cbits = rust_circuit.num_cbits();
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
-        profile.qubits = n;
-        profile.instructions = rust_circuit.instructions.len();
 
-        let t = Instant::now();
         let initial_state = {
             let mut s = vec![C::new(0.0, 0.0); 1 << n];
             s[0] = C::new(1.0, 0.0);
             s
         };
-        profile.setup = profiling::elapsed_since(t);
 
         // Fuse consecutive single-qubit gates once, before the parallel shot loop.
-        let t = Instant::now();
         let fused = fuse_circuit(&rust_circuit.instructions);
-        profile.fusion = profiling::elapsed_since(t);
-        profile.fused_instructions = fused.len();
 
-        let t = Instant::now();
-        let (counts, shot_stats) = if profile_enabled {
-            py.allow_threads(|| -> Result<(HashMap<String, usize>, ShotStats), String> {
+        let shot_loop_profiler = ShotLoopProfiler::start("statevector", n, shots, fused.len());
+        let counts = py
+            .allow_threads(|| -> Result<HashMap<String, usize>, String> {
                 (0..shots)
                     .into_par_iter()
-                    .map(|i| -> Result<(String, ShotStats), String> {
-                        let mut stats = ShotStats::default();
-
-                        let t = Instant::now();
+                    .map(|i| -> Result<String, String> {
                         let mut state = initial_state.clone();
-                        stats.state_clone.add(t.elapsed());
-
                         let mut cbits: HashMap<usize, i32> = HashMap::new();
                         let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
                         for fi in &fused {
-                            run_fused_par_profiled(
-                                &mut state, fi, n, &mut cbits, &mut rng, &mut stats,
-                            )?;
+                            run_fused_par(&mut state, fi, n, &mut cbits, &mut rng)?;
                         }
-
-                        let t = Instant::now();
-                        let key = format_cbits(&cbits, num_cbits);
-                        stats.format_counts_key.add(t.elapsed());
-                        Ok((key, stats))
+                        Ok(format_cbits(&cbits, num_cbits))
                     })
-                    .try_fold(
-                        || (HashMap::new(), ShotStats::default()),
-                        |(mut m, mut acc), r| {
-                            let (k, stats) = r?;
-                            *m.entry(k).or_insert(0) += 1;
-                            acc += stats;
-                            Ok((m, acc))
-                        },
-                    )
-                    .try_reduce(
-                        || (HashMap::new(), ShotStats::default()),
-                        |(mut a, mut acc_a), (b, acc_b)| {
-                            for (k, v) in b {
-                                *a.entry(k).or_insert(0) += v;
-                            }
-                            acc_a += acc_b;
-                            Ok((a, acc_a))
-                        },
-                    )
+                    .try_fold(HashMap::new, |mut m, r| {
+                        let k = r?;
+                        *m.entry(k).or_insert(0) += 1;
+                        Ok(m)
+                    })
+                    .try_reduce(HashMap::new, |mut a, b| {
+                        for (k, v) in b {
+                            *a.entry(k).or_insert(0) += v;
+                        }
+                        Ok(a)
+                    })
             })
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?
-        } else {
-            let counts = py
-                .allow_threads(|| -> Result<HashMap<String, usize>, String> {
-                    (0..shots)
-                        .into_par_iter()
-                        .map(|i| -> Result<String, String> {
-                            let mut state = initial_state.clone();
-                            let mut cbits: HashMap<usize, i32> = HashMap::new();
-                            let mut rng =
-                                ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
-                            for fi in &fused {
-                                run_fused_par(&mut state, fi, n, &mut cbits, &mut rng)?;
-                            }
-                            Ok(format_cbits(&cbits, num_cbits))
-                        })
-                        .try_fold(HashMap::new, |mut m, r| {
-                            let k = r?;
-                            *m.entry(k).or_insert(0) += 1;
-                            Ok(m)
-                        })
-                        .try_reduce(HashMap::new, |mut a, b| {
-                            for (k, v) in b {
-                                *a.entry(k).or_insert(0) += v;
-                            }
-                            Ok(a)
-                        })
-                })
-                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-            (counts, ShotStats::default())
-        };
-        profile.shot_loop_wall = profiling::elapsed_since(t);
-        profile.shot_stats = shot_stats;
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        if let Some(profiler) = shot_loop_profiler {
+            profiler.finish();
+        }
 
-        let t = Instant::now();
         let d = PyDict::new_bound(py);
         for (k, v) in &counts {
             d.set_item(k, v)?;
-        }
-        profile.result_dict = profiling::elapsed_since(t);
-        if profile_enabled {
-            profiling::print(&profile);
         }
         Ok(d.into())
     }
@@ -1095,101 +1024,6 @@ fn run_fused_par(
             Ok(())
         }
         FusedInstruction::Original(inst) => run_instruction_par(state, inst, n, cbits, rng),
-    }
-}
-
-fn run_fused_par_profiled(
-    state: &mut [C],
-    fi: &FusedInstruction<'_>,
-    n: usize,
-    cbits: &mut HashMap<usize, i32>,
-    rng: &mut impl Rng,
-    stats: &mut ShotStats,
-) -> Result<(), String> {
-    match fi {
-        FusedInstruction::Fused1Q { qubit, matrix } => {
-            let t = Instant::now();
-            apply_one_qubit_seq(state, matrix, *qubit, n, &[]);
-            stats.fused_one_qubit.add(t.elapsed());
-            Ok(())
-        }
-        FusedInstruction::Original(inst) => {
-            let t = Instant::now();
-            let result = run_instruction_par(state, inst, n, cbits, rng);
-            let elapsed = t.elapsed();
-            stats.original_dispatch.add(elapsed);
-            match instruction_profile_bucket(inst) {
-                InstructionProfileBucket::SingleQ => stats.single_qubit.add(elapsed),
-                InstructionProfileBucket::MultiQ => stats.multi_qubit.add(elapsed),
-                InstructionProfileBucket::Measure => stats.measurement.add(elapsed),
-                InstructionProfileBucket::Reset => stats.reset.add(elapsed),
-                InstructionProfileBucket::Conditional => stats.conditional.add(elapsed),
-                InstructionProfileBucket::Noop => {}
-            }
-            result
-        }
-    }
-}
-
-enum InstructionProfileBucket {
-    SingleQ,
-    MultiQ,
-    Measure,
-    Reset,
-    Conditional,
-    Noop,
-}
-
-fn instruction_profile_bucket(inst: &Instruction) -> InstructionProfileBucket {
-    match inst {
-        Instruction::Id { .. }
-        | Instruction::U0 { .. }
-        | Instruction::Barrier
-        | Instruction::Classical { .. } => InstructionProfileBucket::Noop,
-        Instruction::X { .. }
-        | Instruction::Y { .. }
-        | Instruction::Z { .. }
-        | Instruction::H { .. }
-        | Instruction::S { .. }
-        | Instruction::Sdg { .. }
-        | Instruction::T { .. }
-        | Instruction::Tdg { .. }
-        | Instruction::Sx { .. }
-        | Instruction::Sxdg { .. }
-        | Instruction::U3 { .. }
-        | Instruction::U2 { .. }
-        | Instruction::U1 { .. }
-        | Instruction::U { .. }
-        | Instruction::P { .. }
-        | Instruction::Rx { .. }
-        | Instruction::Ry { .. }
-        | Instruction::Rz { .. } => InstructionProfileBucket::SingleQ,
-        Instruction::Measure { .. } => InstructionProfileBucket::Measure,
-        Instruction::Reset { .. } => InstructionProfileBucket::Reset,
-        Instruction::Conditional { .. } => InstructionProfileBucket::Conditional,
-        Instruction::Cx { .. }
-        | Instruction::Cz { .. }
-        | Instruction::Cy { .. }
-        | Instruction::Ch { .. }
-        | Instruction::Swap { .. }
-        | Instruction::Csx { .. }
-        | Instruction::Crx { .. }
-        | Instruction::Cry { .. }
-        | Instruction::Crz { .. }
-        | Instruction::Cu1 { .. }
-        | Instruction::Cp { .. }
-        | Instruction::Cu3 { .. }
-        | Instruction::Cu { .. }
-        | Instruction::Rxx { .. }
-        | Instruction::Rzz { .. }
-        | Instruction::Ccx { .. }
-        | Instruction::Cswap { .. }
-        | Instruction::Rccx { .. }
-        | Instruction::Rc3x { .. }
-        | Instruction::C3x { .. }
-        | Instruction::C3sqrtx { .. }
-        | Instruction::C4x { .. }
-        | Instruction::Gate { .. } => InstructionProfileBucket::MultiQ,
     }
 }
 

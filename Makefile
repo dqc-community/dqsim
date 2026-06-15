@@ -1,4 +1,4 @@
-.PHONY: build publish test perf perf-profile lint check suite
+.PHONY: build publish test perf perf-flamegraph perf-profile bench-two-qubit-gates lint check suite
 
 DIST_DIR := dist
 REPOSITORY ?= testpypi
@@ -28,9 +28,15 @@ perf:
 	uvx --python 3.11 maturin develop --skip-install --release
 	uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
 
-perf-profile:
-	uvx --python 3.11 maturin develop --skip-install --release
-	DQSIM_PROFILE_SHOTS=1 uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
+perf-flamegraph:
+	rm -rf target/flamegraphs
+	CARGO_PROFILE_RELEASE_DEBUG=true uvx --python 3.11 maturin develop --skip-install --release
+	DQSIM_FLAMEGRAPH_DIR=target/flamegraphs uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
+
+perf-profile: perf-flamegraph
+
+bench-two-qubit-gates:
+	cargo bench --bench two_qubit_gates
 
 build:
 	rm -rf $(DIST_DIR)

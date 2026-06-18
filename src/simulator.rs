@@ -67,7 +67,7 @@ pub fn simulate_monolithic_shots(
         MonolithicSimulationMode::StateVector => {
             reject_monolithic_options(options, mode)?;
             let sim = StatevectorSimulator::new(seed, false);
-            sim.simulate_shots(py, circuit, shots)
+            sim.simulate_shots(py, circuit, shots, false)
         }
         MonolithicSimulationMode::Mps => {
             let options = parse_mps_options(options)?;

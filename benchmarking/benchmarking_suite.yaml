@@ -42,3 +42,34 @@ circuits:
   # - name: bv_n14
   #   nodes: 2
   #   qubits_per_node: 7
+  - clifford:
+      - name: deutsch_n2
+        nodes: 2
+        qubits_per_node: 1
+      - name: grover_n2
+        nodes: 2
+        qubits_per_node: 1
+      - name: iswap_n2
+        nodes: 2
+        qubits_per_node: 1
+      - name: qrng_n4
+        nodes: 2
+        qubits_per_node: 2
+      - name: cat_state_n4
+        nodes: 2
+        qubits_per_node: 2
+      - name: hs4_n4
+        nodes: 2
+        qubits_per_node: 2
+      - name: lpn_n5
+        nodes: 3
+        qubits_per_node: 2
+      - name: bb84_n8
+        nodes: 2
+        qubits_per_node: 4
+      # - name: cc_n12
+      #   nodes: 3
+      #   qubits_per_node: 4
+      # - name: bv_n14
+      #   nodes: 2
+      #   qubits_per_node: 7

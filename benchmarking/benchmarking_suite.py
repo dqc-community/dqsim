@@ -6,6 +6,7 @@ Run with:  pytest benchmarking/benchmarking_suite.py -v -s
 Reports per-shot latency (µs) averaged over SHOTS:
   dqsim-sv     : StatevectorSimulator.simulate_shots(SHOTS) / SHOTS
   dqsim-pblock : PBlockSimulator.simulate_shots(SHOTS) / SHOTS
+  dqsim-stab   : StabilizerSimulator.simulate_shots(SHOTS) / SHOTS
   aer          : AerSimulator().run(qc, shots=SHOTS) / SHOTS
 """
 
@@ -23,7 +24,7 @@ from bosonic_converters import CircuitConverters
 from bosonic_sdk.distributor.distributors.disqco_distributor import DisqcoDistributor
 from bosonic_sdk.simulation.simulator import Simulator as BosonicSimulator
 
-from dqsim import PBlockSimulator, StatevectorSimulator
+from dqsim import PBlockSimulator, StabilizerSimulator, StatevectorSimulator
 
 
 
@@ -41,8 +42,19 @@ class BenchmarkConfig:
         self.shots: int = raw["config"]["shots"]
         self.circuits: list[CircuitSpec] = [
             CircuitSpec(c["name"], c["nodes"], c["qubits_per_node"])
-            for c in raw["circuits"]
+            for c in self._flatten_circuits(raw["circuits"])
         ]
+
+    @staticmethod
+    def _flatten_circuits(entries: list[dict]) -> list[dict]:
+        circuits = []
+        for entry in entries:
+            if "name" in entry:
+                circuits.append(entry)
+                continue
+            for group in entry.values():
+                circuits.extend(group)
+        return circuits
 
 
 
@@ -51,6 +63,7 @@ class CircuitTimings:
     sv_shots_ms: float
     pblock_lowered_shots_ms: float
     pblock_symbolic_shots_ms: float | None
+    stabilizer_shots_ms: float | None
     aer_shots_ms: float
 
 
@@ -98,6 +111,7 @@ class BenchmarkRunner:
                 sv_shots_ms=self._time_sv_shots(monolithic),
                 pblock_lowered_shots_ms=self._time_pblock_shots(distributed_lowered),
                 pblock_symbolic_shots_ms=self._time_pblock_shots(distributed_symbolic) if distributed_symbolic else None,
+                stabilizer_shots_ms=self._time_stabilizer_shots(circuit),
                 aer_shots_ms=self._time_aer_shots(monolithic),
             ),
         )
@@ -114,6 +128,15 @@ class BenchmarkRunner:
     def _time_pblock_shots(self, distributed) -> float:
         sim = PBlockSimulator(seed=self._config.seed)
         return self._elapsed_ms(lambda: sim.simulate_shots(distributed, shots=self._config.shots))
+
+    def _time_stabilizer_shots(self, circuit) -> float | None:
+        sim = StabilizerSimulator(seed=self._config.seed)
+        try:
+            return self._elapsed_ms(lambda: sim.simulate_shots(circuit, shots=self._config.shots))
+        except RuntimeError as exc:
+            if "Unsupported instruction" in str(exc):
+                return None
+            raise
 
     def _time_aer_shots(self, circuit) -> float:
         qc, sim, backend = self._prepare_aer(circuit)
@@ -133,7 +156,8 @@ class BenchmarkRunner:
 class BenchmarkReporter:
     _HEADER = (
         f"{'Circuit':<16}  {'Qb':>4}  "
-        f"{'sv shot(µs)':>12}  {'pblock(lowered=T)':>18}  {'pblock(lowered=F)':>18}  {'aer shot(µs)':>12}"
+        f"{'sv shot(µs)':>12}  {'pblock(lowered=T)':>18}  {'pblock(lowered=F)':>18}  "
+        f"{'stabilizer shot(µs)':>14}  {'aer shot(µs)':>12}"
     )
     _SEP = "-" * len(_HEADER)
 
@@ -153,11 +177,13 @@ class BenchmarkReporter:
         sv_us = t.sv_shots_ms / self._shots * 1_000
         pblock_lowered_us = t.pblock_lowered_shots_ms / self._shots * 1_000
         pblock_symbolic_us = t.pblock_symbolic_shots_ms / self._shots * 1_000 if t.pblock_symbolic_shots_ms is not None else None
+        stabilizer_us = t.stabilizer_shots_ms / self._shots * 1_000 if t.stabilizer_shots_ms is not None else None
         aer_us = t.aer_shots_ms / self._shots * 1_000
 
         return (
             f"{r.name:<16}  {r.num_qubits:>4}  "
-            f"{sv_us:>12.2f}  {pblock_lowered_us:>18.2f}  {self._fmt_ms(pblock_symbolic_us, 18)}  {aer_us:>12.2f}"
+            f"{sv_us:>12.2f}  {pblock_lowered_us:>18.2f}  {self._fmt_ms(pblock_symbolic_us, 18)}  "
+            f"{self._fmt_ms(stabilizer_us, 14)}  {aer_us:>12.2f}"
         )
 
     @staticmethod

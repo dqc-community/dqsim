@@ -4,6 +4,7 @@ use pyo3::types::PyDict;
 pub(crate) enum MonolithicSimulationMode {
     StateVector,
     Mps,
+    Stabilizer,
 }
 
 pub(crate) enum DistributedSimulationMode {
@@ -19,6 +20,7 @@ pub(crate) fn parse_monolithic_mode(mode: &str) -> PyResult<MonolithicSimulation
     match mode.trim().to_ascii_lowercase().replace('-', "_").as_str() {
         "state_vector" | "statevector" | "sv" => Ok(MonolithicSimulationMode::StateVector),
         "mps" | "matrix_product_state" => Ok(MonolithicSimulationMode::Mps),
+        "stabilizer" | "stab" => Ok(MonolithicSimulationMode::Stabilizer),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Unsupported monolithic simulation mode {other:?}; expected 'state_vector' or 'mps'"
         ))),

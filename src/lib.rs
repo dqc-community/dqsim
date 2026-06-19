@@ -17,6 +17,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<monolithic::mps::MpsSimulator>()?;
     m.add_class::<monolithic::statevector::SimulationResult>()?;
     m.add_class::<monolithic::statevector::SimulationProfile>()?;
+    m.add_class::<monolithic::stabilizer::StabilizerSimulator>()?;
     m.add_class::<distributed::pblock::PBlockSimulator>()?;
     m.add_class::<distributed::pblock::PBlockResult>()?;
     m.add_function(wrap_pyfunction!(simulator::simulate_monolithic, m)?)?;

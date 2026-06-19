@@ -8,6 +8,7 @@ use crate::codecs::{
 use crate::distributed::pblock::PBlockSimulator;
 use crate::monolithic::mps::MpsSimulator;
 use crate::monolithic::statevector::StatevectorSimulator;
+use crate::monolithic::stabilizer::StabilizerSimulator;
 
 #[pyfunction]
 #[pyo3(signature = (circuit, mode="state_vector", seed=None, profile=false, **options))]
@@ -33,6 +34,12 @@ pub fn simulate_monolithic(
                 options.truncation_threshold,
             );
             Ok(sim.simulate(py, circuit)?.into_py(py))
+        }
+        MonolithicSimulationMode::Stabilizer => {
+            Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "Full statevector extraction ('simulate_monolithic') is not supported for stabilizer simulation. \
+                 Please use shot-based sampling via 'simulate_monolithic_shots' instead."
+            ))
         }
     }
 }
@@ -76,6 +83,11 @@ pub fn simulate_monolithic_shots(
                 options.max_bond_dimension,
                 options.truncation_threshold,
             );
+            sim.simulate_shots(py, circuit, shots)
+        }
+        MonolithicSimulationMode::Stabilizer => {
+            reject_monolithic_options(options, mode)?;
+            let sim = StabilizerSimulator::new(seed);
             sim.simulate_shots(py, circuit, shots)
         }
     }

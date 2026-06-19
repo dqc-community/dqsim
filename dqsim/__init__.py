@@ -5,6 +5,7 @@ from dqsim._core import (
     SimulationProfile,
     SimulationResult,
     StatevectorSimulator,
+    StabilizerSimulator,
     simulate_distributed,
     simulate_distributed_shots,
     simulate_monolithic,
@@ -13,6 +14,7 @@ from dqsim._core import (
 
 __all__ = [
     "StatevectorSimulator",
+    "StabilizerSimulator",
     "MpsSimulator",
     "SimulationResult",
     "SimulationProfile",

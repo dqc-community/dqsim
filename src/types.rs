@@ -4,7 +4,7 @@ use num_complex::Complex64;
 
 type C = Complex64;
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct Register {
     #[allow(dead_code)]
     pub name: String,
@@ -12,7 +12,7 @@ pub struct Register {
     pub base: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Circuit {
     pub qregs: HashMap<String, Register>,
     #[serde(default)]
@@ -50,14 +50,14 @@ pub fn format_cbits(cbits: &HashMap<usize, i32>, num_cbits: usize) -> String {
         .collect()
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct Condition {
     pub creg_base: usize,
     pub creg_size: usize,
     pub creg_value: u64,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
     // -----------------------------------------------------------------------

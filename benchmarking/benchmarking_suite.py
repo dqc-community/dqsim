@@ -59,19 +59,25 @@ class BenchmarkConfig:
 
 
 @dataclass
-class CircuitTimings:
+class DistributedTimings:
     sv_shots_ms: float
     pblock_lowered_shots_ms: float
     pblock_symbolic_shots_ms: float | None
-    stabilizer_shots_ms: float | None
     aer_shots_ms: float
+
+
+@dataclass
+class MonolithicTimings:
+    sv_shots_ms: float
+    stabilizer_shots_ms: float | None
 
 
 @dataclass
 class BenchmarkResult:
     name: str
     num_qubits: int
-    timings: CircuitTimings
+    distributed_timings: DistributedTimings
+    monolithic_timings: MonolithicTimings
 
 
 
@@ -102,17 +108,20 @@ class BenchmarkRunner:
         except ValueError:
             distributed_symbolic = None
 
-        monolithic = distributed_lowered.as_monolithic_circuit()
+        distributed_as_monolithic = distributed_lowered.as_monolithic_circuit()
 
         return BenchmarkResult(
             name=spec.name,
             num_qubits=n,
-            timings=CircuitTimings(
-                sv_shots_ms=self._time_sv_shots(monolithic),
+            distributed_timings=DistributedTimings(
+                sv_shots_ms=self._time_sv_shots(distributed_as_monolithic),
                 pblock_lowered_shots_ms=self._time_pblock_shots(distributed_lowered),
                 pblock_symbolic_shots_ms=self._time_pblock_shots(distributed_symbolic) if distributed_symbolic else None,
+                aer_shots_ms=self._time_aer_shots(distributed_as_monolithic),
+            ),
+            monolithic_timings=MonolithicTimings(
+                sv_shots_ms=self._time_sv_shots(circuit),
                 stabilizer_shots_ms=self._time_stabilizer_shots(circuit),
-                aer_shots_ms=self._time_aer_shots(monolithic),
             ),
         )
 
@@ -156,10 +165,13 @@ class BenchmarkRunner:
 class BenchmarkReporter:
     _HEADER = (
         f"{'Circuit':<16}  {'Qb':>4}  "
-        f"{'sv shot(µs)':>12}  {'pblock(lowered=T)':>18}  {'pblock(lowered=F)':>18}  "
-        f"{'stabilizer shot(µs)':>14}  {'aer shot(µs)':>12}"
+        f"{'sv shot(µs)':>12}  {'pblock(lowered=T)':>18}  {'pblock(lowered=F)':>18}  {'aer shot(µs)':>12}"
     )
     _SEP = "-" * len(_HEADER)
+    _STABILIZER_HEADER = (
+        f"{'Circuit':<16}  {'Qb':>4}  {'sv shot(µs)':>12}  {'stabilizer shot(µs)':>20}"
+    )
+    _STABILIZER_SEP = "-" * len(_STABILIZER_HEADER)
 
     def __init__(self, config: BenchmarkConfig) -> None:
         self._shots = config.shots
@@ -171,19 +183,35 @@ class BenchmarkReporter:
         for r in results:
             print(self._format_row(r))
         print(self._SEP)
+        print(f"\n\nPerformance: dqsim StabilizerSimulator on original monolithic circuits  (SHOTS={self._shots})\n")
+        print(self._STABILIZER_HEADER)
+        print(self._STABILIZER_SEP)
+        for r in results:
+            print(self._format_stabilizer_row(r))
+        print(self._STABILIZER_SEP)
 
     def _format_row(self, r: BenchmarkResult) -> str:
-        t = r.timings
+        t = r.distributed_timings
         sv_us = t.sv_shots_ms / self._shots * 1_000
         pblock_lowered_us = t.pblock_lowered_shots_ms / self._shots * 1_000
         pblock_symbolic_us = t.pblock_symbolic_shots_ms / self._shots * 1_000 if t.pblock_symbolic_shots_ms is not None else None
-        stabilizer_us = t.stabilizer_shots_ms / self._shots * 1_000 if t.stabilizer_shots_ms is not None else None
         aer_us = t.aer_shots_ms / self._shots * 1_000
 
         return (
             f"{r.name:<16}  {r.num_qubits:>4}  "
-            f"{sv_us:>12.2f}  {pblock_lowered_us:>18.2f}  {self._fmt_ms(pblock_symbolic_us, 18)}  "
-            f"{self._fmt_ms(stabilizer_us, 14)}  {aer_us:>12.2f}"
+            f"{sv_us:>12.2f}  {pblock_lowered_us:>18.2f}  {self._fmt_ms(pblock_symbolic_us, 18)}  {aer_us:>12.2f}"
+        )
+
+    def _format_stabilizer_row(self, r: BenchmarkResult) -> str:
+        sv_us = r.monolithic_timings.sv_shots_ms / self._shots * 1_000
+        stabilizer_us = (
+            r.monolithic_timings.stabilizer_shots_ms / self._shots * 1_000
+            if r.monolithic_timings.stabilizer_shots_ms is not None
+            else None
+        )
+        return (
+            f"{r.name:<16}  {r.num_qubits:>4}  "
+            f"{sv_us:>12.2f}  {self._fmt_ms(stabilizer_us, 20)}"
         )
 
     @staticmethod

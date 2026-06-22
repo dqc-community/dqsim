@@ -60,6 +60,10 @@ pub(super) fn merge_blocks(a: Block, b: Block) -> Block {
 pub(super) struct BlockPool {
     pub(super) blocks: Vec<Option<Block>>,
     pub(super) qubit_to_block: HashMap<usize, usize>,
+    /// Number of cross-block merges performed so far. Each merge doubles the
+    /// dimension of the resulting block's statevector, so this is the key
+    /// driver of per-shot cost for circuits with many cross-node gates.
+    pub(super) merge_count: u64,
 }
 
 impl BlockPool {
@@ -79,7 +83,7 @@ impl BlockPool {
             blocks.push(Some(Block::new(qubits)));
         }
 
-        BlockPool { blocks, qubit_to_block }
+        BlockPool { blocks, qubit_to_block, merge_count: 0 }
     }
 
     fn block_of(&self, phys: usize) -> usize {
@@ -98,6 +102,7 @@ impl BlockPool {
             self.qubit_to_block.insert(q, keep_idx);
         }
         self.blocks[keep_idx] = Some(merge_blocks(a, b));
+        self.merge_count += 1;
     }
 
     pub(super) fn ensure_single_block(&mut self, qubits: &[usize]) -> usize {

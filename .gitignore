@@ -15,3 +15,6 @@ build/
 *.dylib
 *.pyd
 *.dSYM/
+
+# simulate_shots(profile=True) output
+/dqsim_profiles/

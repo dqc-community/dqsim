@@ -61,20 +61,21 @@ pub fn simulate_distributed(
 }
 
 #[pyfunction]
-#[pyo3(signature = (circuit, mode="state_vector", shots=1000, seed=None, **options))]
+#[pyo3(signature = (circuit, mode="state_vector", shots=1000, seed=None, profile=false, **options))]
 pub fn simulate_monolithic_shots(
     py: Python,
     circuit: &Bound<PyAny>, // todo: tighten this
     mode: &str,
     shots: usize,
     seed: Option<u64>,
+    profile: bool,
     options: Option<&Bound<PyDict>>,
 ) -> PyResult<PyObject> {
     match parse_monolithic_mode(mode)? {
         MonolithicSimulationMode::StateVector => {
             reject_monolithic_options(options, mode)?;
             let sim = StatevectorSimulator::new(seed, false);
-            sim.simulate_shots(py, circuit, shots)
+            sim.simulate_shots(py, circuit, shots, profile)
         }
         MonolithicSimulationMode::Mps => {
             let options = parse_mps_options(options)?;
@@ -83,29 +84,30 @@ pub fn simulate_monolithic_shots(
                 options.max_bond_dimension,
                 options.truncation_threshold,
             );
-            sim.simulate_shots(py, circuit, shots)
+            sim.simulate_shots(py, circuit, shots, profile)
         }
         MonolithicSimulationMode::Stabilizer => {
             reject_monolithic_options(options, mode)?;
             let sim = StabilizerSimulator::new(seed);
-            sim.simulate_shots(py, circuit, shots)
+            sim.simulate_shots(py, circuit, shots, profile)
         }
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (distributed, mode="p_block", shots=1000, seed=None))]
+#[pyo3(signature = (distributed, mode="p_block", shots=1000, seed=None, profile=false))]
 pub fn simulate_distributed_shots(
     py: Python,
     distributed: &Bound<PyAny>, // todo: tighten this
     mode: &str,
     shots: usize,
     seed: Option<u64>,
+    profile: bool,
 ) -> PyResult<PyObject> {
     match parse_distributed_mode(mode)? {
         DistributedSimulationMode::PBlock => {
             let sim = PBlockSimulator::new(seed);
-            sim.simulate_shots(py, distributed, shots)
+            sim.simulate_shots(py, distributed, shots, profile)
         }
     }
 }

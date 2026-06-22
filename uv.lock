@@ -233,7 +233,7 @@ wheels = [
 
 [[package]]
 name = "bosonic-sdk"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://test.pypi.org/simple" }
 dependencies = [
     { name = "bosonic-converters" },
@@ -257,9 +257,9 @@ dependencies = [
     { name = "qiskit-qasm3-import" },
     { name = "rustworkx" },
 ]
-sdist = { url = "https://test-files.pythonhosted.org/packages/3c/67/c36639a756bd5b49c9052d98a166b350cd77b5485922c78035b3b7c44a2c/bosonic_sdk-0.1.6.tar.gz", hash = "sha256:f15d3b95d968aabaabbee38e7e67f842a126d9d3ceba7b79074e7989daf1f926", size = 12237, upload-time = "2026-05-06T04:16:23.38Z" }
+sdist = { url = "https://test-files.pythonhosted.org/packages/90/34/355510ea103cf69919764cf2269e756d25769abd35f9f2243467b17b7d0f/bosonic_sdk-0.1.7.tar.gz", hash = "sha256:27de07897d0c2cc8b58faef8d13b7bec19f48b54183f95f9e1eb96362956d2ee", size = 12347, upload-time = "2026-06-22T15:40:54.13Z" }
 wheels = [
-    { url = "https://test-files.pythonhosted.org/packages/1e/cb/ec278fdebdcf7276e25968d8668eb607fdec1acef504dfad183aff580f51/bosonic_sdk-0.1.6-py3-none-any.whl", hash = "sha256:bfe30aec01a8ff73a7d8b5881616b7c02558dd9e20d1dd9e9784b102ed0b4702", size = 17385, upload-time = "2026-05-06T04:16:21.517Z" },
+    { url = "https://test-files.pythonhosted.org/packages/79/ef/af4fa6d35411c4693e46a9c143f4b5f651f13e5c81ce0b9aab77bd3fe536/bosonic_sdk-0.1.7-py3-none-any.whl", hash = "sha256:a718591ad5bd9ab8865656ab4b4146d1e7ec28a8f36aa6d2c072385611697bcc", size = 17500, upload-time = "2026-06-22T15:40:52.767Z" },
 ]
 
 [[package]]
@@ -838,7 +838,7 @@ requires-dist = [
     { name = "bosonic-disqco", marker = "extra == 'test'", specifier = ">=0.0.7,<0.1.0", index = "https://test.pypi.org/simple" },
     { name = "bosonic-model", specifier = ">=0.1.1,<0.2.0", index = "https://test.pypi.org/simple" },
     { name = "bosonic-model", marker = "extra == 'test'", specifier = ">=0.1.1,<0.2.0", index = "https://test.pypi.org/simple" },
-    { name = "bosonic-sdk", marker = "extra == 'test'", specifier = ">=0.1.0,<0.2.0", index = "https://test.pypi.org/simple" },
+    { name = "bosonic-sdk", marker = "extra == 'test'", specifier = ">=0.1.7,<0.2.0", index = "https://test.pypi.org/simple" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },

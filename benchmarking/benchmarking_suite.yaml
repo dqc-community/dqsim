@@ -1,6 +1,10 @@
 config:
   seed: 42
   shots: 1000
+  # Set to true to capture per-simulate_shots-call profiling breakdowns
+  # (preprocessing/fusion/shots-total/total, plus simulator-specific fields)
+  # and print them after the timing tables.
+  profile: false
 
 circuits:
   - name: deutsch_n2
@@ -24,9 +28,9 @@ circuits:
   # - name: qpe_n9
   #   nodes: 3
   #   qubits_per_node: 4
-  # - name: ising_n10
-  #   nodes: 2
-  #   qubits_per_node: 5
+  - name: ising_n10
+    nodes: 2
+    qubits_per_node: 5
   # - name: qft_n18
   #   nodes: 2
   #   qubits_per_node: 9
@@ -67,9 +71,9 @@ circuits:
       - name: bb84_n8
         nodes: 2
         qubits_per_node: 4
-      # - name: cc_n12
-      #   nodes: 3
-      #   qubits_per_node: 4
+      - name: cc_n12
+        nodes: 3
+        qubits_per_node: 4
       # - name: bv_n14
       #   nodes: 2
       #   qubits_per_node: 7

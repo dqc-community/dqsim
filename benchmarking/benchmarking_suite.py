@@ -12,6 +12,8 @@ Reports per-shot latency (µs) averaged over SHOTS:
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 import time
 from dataclasses import dataclass
@@ -25,6 +27,50 @@ from bosonic_sdk.distributor.distributors.disqco_distributor import DisqcoDistri
 from bosonic_sdk.simulation.simulator import Simulator as BosonicSimulator
 
 from dqsim import PBlockSimulator, StabilizerSimulator, StatevectorSimulator
+
+_PROFILE_DIR = pathlib.Path("dqsim_profiles")
+
+
+def _read_new_profile(prefix: str, before: set[str]) -> dict | None:
+    """Read the profile JSON written by a simulate_shots(profile=True) call.
+
+    Rust writes shots_profile_<unix_ns>.json with no return value pointing at the
+    path, so we snapshot the directory listing before the call and diff after —
+    the new file (there's exactly one per call) is the profile we just produced.
+    """
+    if not _PROFILE_DIR.is_dir():
+        return None
+    after = {p.name for p in _PROFILE_DIR.glob(f"{prefix}_shots_profile_*.json")}
+    new = after - before
+    if not new:
+        return None
+    return json.loads((_PROFILE_DIR / sorted(new)[-1]).read_text())
+
+
+def _snapshot(prefix: str) -> set[str]:
+    if not _PROFILE_DIR.is_dir():
+        return set()
+    return {p.name for p in _PROFILE_DIR.glob(f"{prefix}_shots_profile_*.json")}
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
+
+
+def _resolve_profile_flag(yaml_default: bool) -> bool:
+    """DQSIM_PROFILE env var (set via `make perf PROFILE=true`) overrides the
+    YAML config's `profile` key when present; otherwise the YAML value wins."""
+    raw = os.environ.get("DQSIM_PROFILE")
+    if raw is None:
+        return yaml_default
+    normalized = raw.strip().lower()
+    if normalized in _TRUTHY:
+        return True
+    if normalized in _FALSY:
+        return False
+    raise ValueError(
+        f"Invalid DQSIM_PROFILE value {raw!r}; use one of {sorted(_TRUTHY | _FALSY)}"
+    )
 
 
 
@@ -40,6 +86,7 @@ class BenchmarkConfig:
         raw = yaml.safe_load(path.read_text())
         self.seed: int = raw["config"]["seed"]
         self.shots: int = raw["config"]["shots"]
+        self.profile: bool = _resolve_profile_flag(raw["config"].get("profile", False))
         self.circuits: list[CircuitSpec] = [
             CircuitSpec(c["name"], c["nodes"], c["qubits_per_node"])
             for c in self._flatten_circuits(raw["circuits"])
@@ -64,12 +111,16 @@ class DistributedTimings:
     pblock_lowered_shots_ms: float
     pblock_symbolic_shots_ms: float | None
     aer_shots_ms: float
+    sv_profile: dict | None = None
+    pblock_lowered_profile: dict | None = None
 
 
 @dataclass
 class MonolithicTimings:
     sv_shots_ms: float
     stabilizer_shots_ms: float | None
+    sv_profile: dict | None = None
+    stabilizer_profile: dict | None = None
 
 
 @dataclass
@@ -110,18 +161,30 @@ class BenchmarkRunner:
 
         distributed_as_monolithic = distributed_lowered.as_monolithic_circuit()
 
+        dist_sv_ms, dist_sv_profile = self._time_sv_shots(distributed_as_monolithic)
+        pblock_lowered_ms, pblock_lowered_profile = self._time_pblock_shots(distributed_lowered)
+        pblock_symbolic_ms, _ = (
+            self._time_pblock_shots(distributed_symbolic) if distributed_symbolic else (None, None)
+        )
+        mono_sv_ms, mono_sv_profile = self._time_sv_shots(circuit)
+        stabilizer_ms, stabilizer_profile = self._time_stabilizer_shots(circuit)
+
         return BenchmarkResult(
             name=spec.name,
             num_qubits=n,
             distributed_timings=DistributedTimings(
-                sv_shots_ms=self._time_sv_shots(distributed_as_monolithic),
-                pblock_lowered_shots_ms=self._time_pblock_shots(distributed_lowered),
-                pblock_symbolic_shots_ms=self._time_pblock_shots(distributed_symbolic) if distributed_symbolic else None,
+                sv_shots_ms=dist_sv_ms,
+                pblock_lowered_shots_ms=pblock_lowered_ms,
+                pblock_symbolic_shots_ms=pblock_symbolic_ms,
                 aer_shots_ms=self._time_aer_shots(distributed_as_monolithic),
+                sv_profile=dist_sv_profile,
+                pblock_lowered_profile=pblock_lowered_profile,
             ),
             monolithic_timings=MonolithicTimings(
-                sv_shots_ms=self._time_sv_shots(circuit),
-                stabilizer_shots_ms=self._time_stabilizer_shots(circuit),
+                sv_shots_ms=mono_sv_ms,
+                stabilizer_shots_ms=stabilizer_ms,
+                sv_profile=mono_sv_profile,
+                stabilizer_profile=stabilizer_profile,
             ),
         )
 
@@ -130,22 +193,37 @@ class BenchmarkRunner:
         fn()
         return (time.perf_counter() - t0) * 1_000
 
-    def _time_sv_shots(self, circuit) -> float:
+    def _time_sv_shots(self, circuit) -> tuple[float, dict | None]:
         sim = StatevectorSimulator(seed=self._config.seed)
-        return self._elapsed_ms(lambda: sim.simulate_shots(circuit, shots=self._config.shots))
+        profile = self._config.profile
+        before = _snapshot("statevector") if profile else set()
+        ms = self._elapsed_ms(
+            lambda: sim.simulate_shots(circuit, shots=self._config.shots, profile=profile)
+        )
+        return ms, (_read_new_profile("statevector", before) if profile else None)
 
-    def _time_pblock_shots(self, distributed) -> float:
+    def _time_pblock_shots(self, distributed) -> tuple[float, dict | None]:
         sim = PBlockSimulator(seed=self._config.seed)
-        return self._elapsed_ms(lambda: sim.simulate_shots(distributed, shots=self._config.shots))
+        profile = self._config.profile
+        before = _snapshot("pblock") if profile else set()
+        ms = self._elapsed_ms(
+            lambda: sim.simulate_shots(distributed, shots=self._config.shots, profile=profile)
+        )
+        return ms, (_read_new_profile("pblock", before) if profile else None)
 
-    def _time_stabilizer_shots(self, circuit) -> float | None:
+    def _time_stabilizer_shots(self, circuit) -> tuple[float | None, dict | None]:
         sim = StabilizerSimulator(seed=self._config.seed)
+        profile = self._config.profile
+        before = _snapshot("stabilizer") if profile else set()
         try:
-            return self._elapsed_ms(lambda: sim.simulate_shots(circuit, shots=self._config.shots))
+            ms = self._elapsed_ms(
+                lambda: sim.simulate_shots(circuit, shots=self._config.shots, profile=profile)
+            )
         except RuntimeError as exc:
             if "Unsupported instruction" in str(exc):
-                return None
+                return None, None
             raise
+        return ms, (_read_new_profile("stabilizer", before) if profile else None)
 
     def _time_aer_shots(self, circuit) -> float:
         qc, sim, backend = self._prepare_aer(circuit)
@@ -175,6 +253,7 @@ class BenchmarkReporter:
 
     def __init__(self, config: BenchmarkConfig) -> None:
         self._shots = config.shots
+        self._profile = config.profile
 
     def print(self, results: list[BenchmarkResult]) -> None:
         print(f"\n\nPerformance: dqsim vs Qiskit Aer  (SHOTS={self._shots}, single-call timing)\n")
@@ -189,6 +268,33 @@ class BenchmarkReporter:
         for r in results:
             print(self._format_stabilizer_row(r))
         print(self._STABILIZER_SEP)
+        if self._profile:
+            self._print_profile_breakdown(results)
+
+    def _print_profile_breakdown(self, results: list[BenchmarkResult]) -> None:
+        print("\n\nsimulate_shots(profile=True) breakdown (ms, totals across all shots)\n")
+        for r in results:
+            print(f"  {r.name} ({r.num_qubits} qubits):")
+            self._print_one_profile("    sv (distributed-as-monolithic)", r.distributed_timings.sv_profile)
+            self._print_one_profile("    pblock (lowered)", r.distributed_timings.pblock_lowered_profile)
+            self._print_one_profile("    sv (monolithic)", r.monolithic_timings.sv_profile)
+            self._print_one_profile("    stabilizer", r.monolithic_timings.stabilizer_profile)
+
+    @staticmethod
+    def _print_one_profile(label: str, profile: dict | None) -> None:
+        if profile is None:
+            return
+        extras = ", ".join(
+            f"{k}={v}"
+            for k, v in profile.items()
+            if k not in ("shot_times", "num_shots", "preprocessing_time", "fusion_time", "shots_total_time", "total_time")
+        )
+        fusion = f", fusion={profile['fusion_time'] * 1000:.3f}" if "fusion_time" in profile else ""
+        print(
+            f"{label}: preprocessing={profile['preprocessing_time'] * 1000:.3f}{fusion}, "
+            f"shots_total={profile['shots_total_time'] * 1000:.3f}, total={profile['total_time'] * 1000:.3f}"
+            + (f", {extras}" if extras else "")
+        )
 
     def _format_row(self, r: BenchmarkResult) -> str:
         t = r.distributed_timings

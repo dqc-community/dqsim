@@ -8,12 +8,28 @@ use pyo3::types::PyDict;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::engine::{apply_n_qubit, apply_one_qubit, apply_n_qubit_seq, apply_one_qubit_seq, measure_qubit, measure_qubit_seq, marginal_probs, sample_counts};
 use crate::gates;
+use crate::profiling::write_shots_profile;
 use crate::types::{Circuit, FusedInstruction, Instruction, format_cbits, fuse_circuit};
 
 type C = Complex64;
+
+// ---------------------------------------------------------------------------
+// ShotsProfile (simulate_shots instrumentation, dumped to JSON on disk)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ShotsProfile {
+    preprocessing_time: f64,
+    fusion_time: f64,
+    shots_total_time: f64,
+    total_time: f64,
+    num_shots: usize,
+    shot_times: Vec<f64>,
+}
 
 // ---------------------------------------------------------------------------
 // Profiling accumulator (internal, not a pyclass)
@@ -196,8 +212,17 @@ impl StatevectorSimulator {
     /// Run the circuit `shots` times independently, collapsing state on every mid-circuit
     /// measurement per shot. Returns a dict[str, int] of bitstring counts — the true
     /// shot distribution including classically-conditioned corrections.
-    #[pyo3(signature = (circuit, shots=1000))]
-    pub fn simulate_shots(&self, py: Python, circuit: &Bound<PyAny>, shots: usize) -> PyResult<PyObject> {
+    #[pyo3(signature = (circuit, shots=1000, profile=false))]
+    pub fn simulate_shots(
+        &self,
+        py: Python,
+        circuit: &Bound<PyAny>,
+        shots: usize,
+        profile: bool,
+    ) -> PyResult<PyObject> {
+        let total_t0 = Instant::now();
+
+        let preprocessing_t0 = Instant::now();
         let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
         let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
@@ -212,36 +237,87 @@ impl StatevectorSimulator {
             s[0] = C::new(1.0, 0.0);
             s
         };
+        let preprocessing_time = preprocessing_t0.elapsed().as_secs_f64();
 
         // Fuse consecutive single-qubit gates once, before the parallel shot loop.
+        let fusion_t0 = Instant::now();
         let fused = fuse_circuit(&rust_circuit.instructions);
+        let fusion_time = fusion_t0.elapsed().as_secs_f64();
 
-        let counts = py.allow_threads(|| -> Result<HashMap<String, usize>, String> {
-            (0..shots)
-                .into_par_iter()
-                .map(|i| -> Result<String, String> {
-                    let mut state = initial_state.clone();
-                    let mut cbits: HashMap<usize, i32> = HashMap::new();
-                    let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
-                    for fi in &fused {
-                        run_fused_par(&mut state, fi, n, &mut cbits, &mut rng)?;
-                    }
-                    Ok(format_cbits(&cbits, num_cbits))
-                })
-                .try_fold(
-                    HashMap::new,
-                    |mut m, r| { let k = r?; *m.entry(k).or_insert(0) += 1; Ok(m) },
-                )
-                .try_reduce(
-                    HashMap::new,
-                    |mut a, b| { for (k, v) in b { *a.entry(k).or_insert(0) += v; } Ok(a) },
-                )
-        }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let shots_t0 = Instant::now();
+        let (counts, shot_times) = if profile {
+            let results = py.allow_threads(|| -> Result<Vec<(String, f64)>, String> {
+                (0..shots)
+                    .into_par_iter()
+                    .map(|i| -> Result<(String, f64), String> {
+                        let shot_t0 = Instant::now();
+                        let mut state = initial_state.clone();
+                        let mut cbits: HashMap<usize, i32> = HashMap::new();
+                        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+                        for fi in &fused {
+                            run_fused_par(&mut state, fi, n, &mut cbits, &mut rng)?;
+                        }
+                        let bits = format_cbits(&cbits, num_cbits);
+                        Ok((bits, shot_t0.elapsed().as_secs_f64()))
+                    })
+                    .collect()
+            }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            let mut shot_times: Vec<f64> = Vec::with_capacity(results.len());
+            for (bits, t) in results {
+                *counts.entry(bits).or_insert(0) += 1;
+                shot_times.push(t);
+            }
+            (counts, shot_times)
+        } else {
+            let counts = py.allow_threads(|| -> Result<HashMap<String, usize>, String> {
+                (0..shots)
+                    .into_par_iter()
+                    .map(|i| -> Result<String, String> {
+                        let mut state = initial_state.clone();
+                        let mut cbits: HashMap<usize, i32> = HashMap::new();
+                        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+                        for fi in &fused {
+                            run_fused_par(&mut state, fi, n, &mut cbits, &mut rng)?;
+                        }
+                        Ok(format_cbits(&cbits, num_cbits))
+                    })
+                    .try_fold(
+                        HashMap::new,
+                        |mut m, r| { let k = r?; *m.entry(k).or_insert(0) += 1; Ok(m) },
+                    )
+                    .try_reduce(
+                        HashMap::new,
+                        |mut a, b| { for (k, v) in b { *a.entry(k).or_insert(0) += v; } Ok(a) },
+                    )
+            }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            (counts, Vec::new())
+        };
+        let shots_total_time = shots_t0.elapsed().as_secs_f64();
 
         let d = PyDict::new_bound(py);
         for (k, v) in &counts {
             d.set_item(k, v)?;
         }
+
+        if profile {
+            let total_time = total_t0.elapsed().as_secs_f64();
+            let shots_profile = ShotsProfile {
+                preprocessing_time,
+                fusion_time,
+                shots_total_time,
+                total_time,
+                num_shots: shots,
+                shot_times,
+            };
+            write_shots_profile("statevector", &shots_profile).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to write shots profile: {e}"
+                ))
+            })?;
+        }
+
         Ok(d.into())
     }
 

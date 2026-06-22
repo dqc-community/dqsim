@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use nalgebra::DMatrix;
 use num_complex::Complex64;
@@ -6,12 +7,31 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use serde::Serialize;
 
 use crate::gates;
 use crate::monolithic::statevector::SimulationResult;
+use crate::profiling::write_shots_profile;
 use crate::types::{format_cbits, Circuit, Instruction};
 
 type C = Complex64;
+
+// ---------------------------------------------------------------------------
+// ShotsProfile (simulate_shots instrumentation, dumped to JSON on disk)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ShotsProfile {
+    preprocessing_time: f64,
+    shots_total_time: f64,
+    total_time: f64,
+    num_shots: usize,
+    shot_times: Vec<f64>,
+    /// Total count/time of SVDs performed across all shots (the dominant cost of
+    /// two-qubit gates in the MPS representation, driven by truncation behavior).
+    svd_calls: u64,
+    svd_time: f64,
+}
 
 #[derive(Clone)]
 struct Tensor {
@@ -50,6 +70,8 @@ struct Mps {
     tensors: Vec<Tensor>,
     max_bond_dimension: Option<usize>,
     truncation_threshold: f64,
+    svd_calls: u64,
+    svd_time: f64,
 }
 
 impl Mps {
@@ -68,6 +90,8 @@ impl Mps {
             tensors,
             max_bond_dimension,
             truncation_threshold,
+            svd_calls: 0,
+            svd_time: 0.0,
         }
     }
 
@@ -148,7 +172,10 @@ impl Mps {
             }
         }
 
+        let svd_t0 = Instant::now();
         let svd = theta.svd(true, true);
+        self.svd_time += svd_t0.elapsed().as_secs_f64();
+        self.svd_calls += 1;
         let u = svd.u.ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("MPS SVD did not return U")
         })?;
@@ -318,13 +345,17 @@ impl MpsSimulator {
         ))
     }
 
-    #[pyo3(signature = (circuit, shots=1000))]
+    #[pyo3(signature = (circuit, shots=1000, profile=false))]
     pub fn simulate_shots(
         &self,
         py: Python,
         circuit: &Bound<PyAny>,
         shots: usize,
+        profile: bool,
     ) -> PyResult<PyObject> {
+        let total_t0 = Instant::now();
+
+        let preprocessing_t0 = Instant::now();
         let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
         let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
@@ -332,8 +363,15 @@ impl MpsSimulator {
 
         let num_cbits = rust_circuit.num_cbits();
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
+        let preprocessing_time = preprocessing_t0.elapsed().as_secs_f64();
+
+        let shots_t0 = Instant::now();
         let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut shot_times: Vec<f64> = Vec::with_capacity(if profile { shots } else { 0 });
+        let mut svd_calls: u64 = 0;
+        let mut svd_time: f64 = 0.0;
         for shot in 0..shots {
+            let shot_t0 = Instant::now();
             let mut mps = Mps::new(
                 rust_circuit.num_qubits(),
                 self.max_bond_dimension,
@@ -346,12 +384,37 @@ impl MpsSimulator {
             }
             let key = format_cbits(&cbits, num_cbits);
             *counts.entry(key).or_insert(0) += 1;
+            if profile {
+                shot_times.push(shot_t0.elapsed().as_secs_f64());
+                svd_calls += mps.svd_calls;
+                svd_time += mps.svd_time;
+            }
         }
+        let shots_total_time = shots_t0.elapsed().as_secs_f64();
 
         let d = PyDict::new_bound(py);
         for (key, value) in &counts {
             d.set_item(key, value)?;
         }
+
+        if profile {
+            let total_time = total_t0.elapsed().as_secs_f64();
+            let shots_profile = ShotsProfile {
+                preprocessing_time,
+                shots_total_time,
+                total_time,
+                num_shots: shots,
+                shot_times,
+                svd_calls,
+                svd_time,
+            };
+            write_shots_profile("mps", &shots_profile).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to write shots profile: {e}"
+                ))
+            })?;
+        }
+
         Ok(d.into())
     }
 }

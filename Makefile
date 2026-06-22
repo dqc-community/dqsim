@@ -2,6 +2,8 @@
 
 DIST_DIR := dist
 REPOSITORY ?= testpypi
+# make perf PROFILE=true  -- enable simulate_shots(profile=True) breakdown printing
+PROFILE ?= false
 
 ifeq ($(REPOSITORY),testpypi)
 PUBLISH_URL := https://test.pypi.org/legacy/
@@ -26,7 +28,7 @@ suite:
 
 perf:
 	uvx --python 3.11 maturin develop --skip-install --release
-	uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
+	DQSIM_PROFILE=$(PROFILE) uv run --python 3.11 --extra test pytest benchmarking/benchmarking_suite.py -v -s
 
 build:
 	rm -rf $(DIST_DIR)

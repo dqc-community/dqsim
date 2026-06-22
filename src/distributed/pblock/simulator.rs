@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
@@ -6,12 +7,31 @@ use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::engine::{apply_n_qubit, apply_one_qubit, apply_n_qubit_seq, apply_one_qubit_seq, measure_qubit, measure_qubit_seq, marginal_probs};
 use crate::gates;
+use crate::profiling::write_shots_profile;
 use crate::types::{Circuit, FusedPBlockEntry, Instruction, format_cbits, fuse_pblock_entries};
 
 use super::model::{Block, BlockPool, C, m4, m8, m16, m32};
+
+// ---------------------------------------------------------------------------
+// ShotsProfile (simulate_shots instrumentation, dumped to JSON on disk)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ShotsProfile {
+    preprocessing_time: f64,
+    fusion_time: f64,
+    shots_total_time: f64,
+    total_time: f64,
+    num_shots: usize,
+    shot_times: Vec<f64>,
+    /// Total count of cross-block merges performed across all shots — the
+    /// key driver of per-shot cost when nodes are coupled by cross-node gates.
+    merge_calls: u64,
+}
 
 // ---------------------------------------------------------------------------
 // PBlockResult
@@ -104,8 +124,17 @@ impl PBlockSimulator {
     /// Run the distributed circuit `shots` times independently, yielding a true
     /// per-shot distribution that respects mid-circuit measurements and classical feedback.
     /// The expensive Python/JSON extraction happens once; only the block simulation loops.
-    #[pyo3(signature = (distributed, shots=1000))]
-    pub fn simulate_shots(&self, py: Python, distributed: &Bound<PyAny>, shots: usize) -> PyResult<PyObject> {
+    #[pyo3(signature = (distributed, shots=1000, profile=false))]
+    pub fn simulate_shots(
+        &self,
+        py: Python,
+        distributed: &Bound<PyAny>,
+        shots: usize,
+        profile: bool,
+    ) -> PyResult<PyObject> {
+        let total_t0 = Instant::now();
+        let preprocessing_t0 = Instant::now();
+
         // ── One-time setup (identical to simulate()) ──────────────────────────
         let instr_index_py = distributed.getattr("_instruction_index")?;
         let instr_index_dict = instr_index_py.downcast::<PyDict>()?;
@@ -167,53 +196,85 @@ impl PBlockSimulator {
 
         let num_cbits = node_circuits.values().map(|c| c.num_cbits()).max().unwrap_or(0);
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
+        let preprocessing_time = preprocessing_t0.elapsed().as_secs_f64();
 
         // Pre-fuse consecutive single-qubit gates across the globally-sorted stream.
+        let fusion_t0 = Instant::now();
         let fused_entries = fuse_pblock_entries(&entries, &node_circuits);
+        let fusion_time = fusion_t0.elapsed().as_secs_f64();
 
         // ── Shot loop — parallel across shots via rayon ───────────────────────
-        let counts = py.allow_threads(|| -> Result<HashMap<String, usize>, String> {
-            (0..shots)
-                .into_par_iter()
-                .map(|i| -> Result<String, String> {
-                    let mut pool = BlockPool::new(&qpn);
-                    let mut cbits: HashMap<usize, i32> = HashMap::new();
-                    let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+        let shots_t0 = Instant::now();
+        let (counts, shot_times, merge_calls) = if profile {
+            let results = py.allow_threads(|| -> Result<Vec<(String, f64, u64)>, String> {
+                (0..shots)
+                    .into_par_iter()
+                    .map(|i| -> Result<(String, f64, u64), String> {
+                        let shot_t0 = Instant::now();
+                        let mut pool = BlockPool::new(&qpn);
+                        let mut cbits: HashMap<usize, i32> = HashMap::new();
+                        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+                        run_shot_entries(&mut pool, &fused_entries, &node_circuits, &mut cbits, &mut rng)?;
+                        let bits = format_cbits(&cbits, num_cbits);
+                        Ok((bits, shot_t0.elapsed().as_secs_f64(), pool.merge_count))
+                    })
+                    .collect()
+            }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
-                    for entry in &fused_entries {
-                        match entry {
-                            FusedPBlockEntry::Fused1Q { qubit, matrix } => {
-                                let block_idx = pool.ensure_single_block(&[*qubit]);
-                                let block = pool.blocks[block_idx].as_mut().unwrap();
-                                let local_q = block.local(*qubit);
-                                let n = block.qubits.len();
-                                apply_one_qubit_seq(&mut block.state, matrix, local_q, n, &[]);
-                            }
-                            FusedPBlockEntry::Original { node, local_idx } => {
-                                let inst = &node_circuits[node].instructions[*local_idx];
-                                let qubits = inst.qubits();
-                                if qubits.is_empty() { continue; }
-                                let block_idx = pool.ensure_single_block(&qubits);
-                                let block = pool.blocks[block_idx].as_mut().unwrap();
-                                dispatch_par(block, inst, &mut cbits, &mut rng)?;
-                            }
-                        }
-                    }
-
-                    Ok(format_cbits(&cbits, num_cbits))
-                })
-                .try_fold(
-                    HashMap::new,
-                    |mut m, r| { let k = r?; *m.entry(k).or_insert(0) += 1; Ok(m) },
-                )
-                .try_reduce(
-                    HashMap::new,
-                    |mut a, b| { for (k, v) in b { *a.entry(k).or_insert(0) += v; } Ok(a) },
-                )
-        }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            let mut shot_times: Vec<f64> = Vec::with_capacity(results.len());
+            let mut merge_calls = 0u64;
+            for (bits, t, mc) in results {
+                *counts.entry(bits).or_insert(0) += 1;
+                shot_times.push(t);
+                merge_calls += mc;
+            }
+            (counts, shot_times, merge_calls)
+        } else {
+            let counts = py.allow_threads(|| -> Result<HashMap<String, usize>, String> {
+                (0..shots)
+                    .into_par_iter()
+                    .map(|i| -> Result<String, String> {
+                        let mut pool = BlockPool::new(&qpn);
+                        let mut cbits: HashMap<usize, i32> = HashMap::new();
+                        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(i as u64));
+                        run_shot_entries(&mut pool, &fused_entries, &node_circuits, &mut cbits, &mut rng)?;
+                        Ok(format_cbits(&cbits, num_cbits))
+                    })
+                    .try_fold(
+                        HashMap::new,
+                        |mut m, r| { let k = r?; *m.entry(k).or_insert(0) += 1; Ok(m) },
+                    )
+                    .try_reduce(
+                        HashMap::new,
+                        |mut a, b| { for (k, v) in b { *a.entry(k).or_insert(0) += v; } Ok(a) },
+                    )
+            }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            (counts, Vec::new(), 0u64)
+        };
+        let shots_total_time = shots_t0.elapsed().as_secs_f64();
 
         let d = PyDict::new_bound(py);
         for (k, v) in &counts { d.set_item(k, v)?; }
+
+        if profile {
+            let total_time = total_t0.elapsed().as_secs_f64();
+            let shots_profile = ShotsProfile {
+                preprocessing_time,
+                fusion_time,
+                shots_total_time,
+                total_time,
+                num_shots: shots,
+                shot_times,
+                merge_calls,
+            };
+            write_shots_profile("pblock", &shots_profile).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to write shots profile: {e}"
+                ))
+            })?;
+        }
+
         Ok(d.into())
     }
 
@@ -565,7 +626,7 @@ fn dispatch(
             apply_n_qubit(&mut block.state, &m32(gates::c4x()), &qs, n);
         }
 
-        Instruction::Gate { name, qubits, .. } => {
+        Instruction::Gate { name, qubits, params } => {
             let lqs: Vec<usize> = qubits.iter().map(|&q| block.local(q)).collect();
             match name.to_lowercase().as_str() {
                 "remote_link_phi_plus" => {
@@ -582,6 +643,14 @@ fn dispatch(
                 }
                 "remote_cx" => {
                     apply_n_qubit(&mut block.state, &m4(gates::cnot()), &lqs, n);
+                }
+                "remote_rzz" => {
+                    let theta = params.first().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "remote_rzz requires one theta parameter",
+                        )
+                    })?;
+                    apply_n_qubit(&mut block.state, &m4(gates::rzz(*theta)), &lqs, n);
                 }
                 "remote_barrier" | "remote_cu1" => {
                     // remote_barrier is a no-op; remote_cu1 is opaque with no params
@@ -632,6 +701,39 @@ fn dispatch(
         }
 
         Instruction::Barrier | Instruction::Classical { .. } => {}
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-shot fused-entry dispatcher (used inside py.allow_threads for parallel shots)
+// ---------------------------------------------------------------------------
+
+fn run_shot_entries(
+    pool: &mut BlockPool,
+    fused_entries: &[FusedPBlockEntry],
+    node_circuits: &HashMap<usize, Circuit>,
+    cbits: &mut HashMap<usize, i32>,
+    rng: &mut impl Rng,
+) -> Result<(), String> {
+    for entry in fused_entries {
+        match entry {
+            FusedPBlockEntry::Fused1Q { qubit, matrix } => {
+                let block_idx = pool.ensure_single_block(&[*qubit]);
+                let block = pool.blocks[block_idx].as_mut().unwrap();
+                let local_q = block.local(*qubit);
+                let n = block.qubits.len();
+                apply_one_qubit_seq(&mut block.state, matrix, local_q, n, &[]);
+            }
+            FusedPBlockEntry::Original { node, local_idx } => {
+                let inst = &node_circuits[node].instructions[*local_idx];
+                let qubits = inst.qubits();
+                if qubits.is_empty() { continue; }
+                let block_idx = pool.ensure_single_block(&qubits);
+                let block = pool.blocks[block_idx].as_mut().unwrap();
+                dispatch_par(block, inst, cbits, rng)?;
+            }
+        }
     }
     Ok(())
 }
@@ -807,7 +909,7 @@ fn dispatch_par(
             apply_n_qubit_seq(&mut block.state, &m32(gates::c4x()), &qs, n);
         }
 
-        Instruction::Gate { name, qubits, .. } => {
+        Instruction::Gate { name, qubits, params } => {
             let lqs: Vec<usize> = qubits.iter().map(|&q| block.local(q)).collect();
             match name.to_lowercase().as_str() {
                 "remote_link_phi_plus" => {
@@ -824,6 +926,12 @@ fn dispatch_par(
                 }
                 "remote_cx" => {
                     apply_n_qubit_seq(&mut block.state, &m4(gates::cnot()), &lqs, n);
+                }
+                "remote_rzz" => {
+                    let theta = params
+                        .first()
+                        .ok_or_else(|| "remote_rzz requires one theta parameter".to_string())?;
+                    apply_n_qubit_seq(&mut block.state, &m4(gates::rzz(*theta)), &lqs, n);
                 }
                 "remote_barrier" | "remote_cu1" => {
                     // remote_barrier is a no-op; remote_cu1 is opaque with no params

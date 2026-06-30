@@ -2,12 +2,12 @@
 
 mod codecs;
 mod distributed;
-mod engine;
-mod gates;
+pub mod engine;
+pub mod gates;
 mod monolithic;
 mod profiling;
 mod simulator;
-mod types;
+pub mod types;
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;

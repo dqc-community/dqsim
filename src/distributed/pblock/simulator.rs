@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
@@ -12,7 +13,7 @@ use crate::engine::{
     measure_qubit, measure_qubit_seq,
 };
 use crate::gates;
-use crate::profiling::ShotLoopProfiler;
+use crate::profiling::{ShotLoopProfiler, ShotsProfile};
 use crate::types::{format_cbits, fuse_pblock_entries, Circuit, FusedPBlockEntry, Instruction};
 
 use super::model::{m16, m32, m4, m8, Block, BlockPool, C};
@@ -63,7 +64,7 @@ impl PBlockResult {
     ///
     /// `qubits`: physical qubit indices, qubits[0] = MSB of the output key.
     /// Default: all physical qubits in descending order, so bit 0 of the key
-    /// corresponds to physical qubit 0 — matching StatevectorSimulator.probabilities().
+    /// corresponds to physical qubit 0 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â matching StatevectorSimulator.probabilities().
     #[pyo3(signature = (qubits=None))]
     fn probabilities(&self, py: Python, qubits: Option<Vec<usize>>) -> PyObject {
         let phys: Vec<usize> =
@@ -108,14 +109,17 @@ impl PBlockSimulator {
     /// Run the distributed circuit `shots` times independently, yielding a true
     /// per-shot distribution that respects mid-circuit measurements and classical feedback.
     /// The expensive Python/JSON extraction happens once; only the block simulation loops.
-    #[pyo3(signature = (distributed, shots=1000))]
+    #[pyo3(signature = (distributed, shots=1000, collect_profile=false))]
     pub fn simulate_shots(
         &self,
         py: Python,
         distributed: &Bound<PyAny>,
         shots: usize,
+        collect_profile: bool,
     ) -> PyResult<PyObject> {
-        // ── One-time setup (identical to simulate()) ──────────────────────────
+        let total_t0 = Instant::now();
+        let preprocessing_t0 = Instant::now();
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ One-time setup (identical to simulate()) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let instr_index_py = distributed.getattr("_instruction_index")?;
         let instr_index_dict = instr_index_py.downcast::<PyDict>()?;
         let mut instr_index: HashMap<usize, i64> = HashMap::new();
@@ -186,12 +190,16 @@ impl PBlockSimulator {
             .unwrap_or(0);
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
         let n = qpn.values().flatten().copied().max().map_or(0, |q| q + 1);
+        let preprocessing_ms = preprocessing_t0.elapsed().as_secs_f64() * 1000.0;
 
         // Pre-fuse consecutive single-qubit gates across the globally-sorted stream.
+        let fusion_t0 = Instant::now();
         let fused_entries = fuse_pblock_entries(&entries, &node_circuits);
+        let gate_fusion_ms = fusion_t0.elapsed().as_secs_f64() * 1000.0;
 
-        // ── Shot loop — parallel across shots via rayon ───────────────────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shot loop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â parallel across shots via rayon ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let shot_loop_profiler = ShotLoopProfiler::start("pblock", n, shots, fused_entries.len());
+        let exec_t0 = Instant::now();
         let counts = py
             .allow_threads(|| -> Result<HashMap<String, usize>, String> {
                 (0..shots)
@@ -239,6 +247,7 @@ impl PBlockSimulator {
                     })
             })
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let parallel_execution_ms = exec_t0.elapsed().as_secs_f64() * 1000.0;
         if let Some(profiler) = shot_loop_profiler {
             profiler.finish();
         }
@@ -247,6 +256,33 @@ impl PBlockSimulator {
         for (k, v) in &counts {
             d.set_item(k, v)?;
         }
+
+        if collect_profile {
+            let profile = ShotsProfile {
+                num_shots: shots,
+                num_qubits: n,
+                num_instructions: fused_entries.len(),
+                preprocessing_ms,
+                gate_fusion_ms,
+                parallel_execution_ms,
+                per_shot_stats: None,
+                total_time_ms: total_t0.elapsed().as_secs_f64() * 1000.0,
+            };
+
+            let profile_json_str = profile.to_json_string().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Profile serialization error: {e}"
+                ))
+            })?;
+            let json_module = py.import_bound("json")?;
+            let profile_dict = json_module.call_method1("loads", (&profile_json_str,))?;
+
+            let result_dict = PyDict::new_bound(py);
+            result_dict.set_item("counts", &d)?;
+            result_dict.set_item("profile", &profile_dict)?;
+            return Ok(result_dict.into());
+        }
+
         Ok(d.into())
     }
 
@@ -255,7 +291,7 @@ impl PBlockSimulator {
     /// Starts with one statevector per node. Merges blocks on demand when
     /// cross-node gates are encountered. Never calls as_monolithic_circuit().
     pub fn simulate(&self, _py: Python, distributed: &Bound<PyAny>) -> PyResult<PBlockResult> {
-        // ── 1. Extract _instruction_index: dict[int(py_id), int(order)] ──────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 1. Extract _instruction_index: dict[int(py_id), int(order)] ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let instr_index_py = distributed.getattr("_instruction_index")?;
         let instr_index_dict = instr_index_py.downcast::<PyDict>()?;
         let mut instr_index: HashMap<usize, i64> = HashMap::new();
@@ -265,10 +301,10 @@ impl PBlockSimulator {
             instr_index.insert(id, order);
         }
 
-        // ── 2. Extract qubits_per_node: dict[int, list[int]] ─────────────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 2. Extract qubits_per_node: dict[int, list[int]] ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let qpn: HashMap<usize, Vec<usize>> = distributed.getattr("qubits_per_node")?.extract()?;
 
-        // ── 3. Iterate node circuits in sorted order ──────────────────────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 3. Iterate node circuits in sorted order ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let circuits_py = distributed.getattr("circuits")?;
         let circuits_dict = circuits_py.downcast::<PyDict>()?;
 
@@ -317,7 +353,7 @@ impl PBlockSimulator {
 
         entries.sort_by_key(|e| e.0);
 
-        // ── 4. Deserialize all node circuits ─────────────────────────────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 4. Deserialize all node circuits ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let node_circuits: HashMap<usize, Circuit> = node_circuit_jsons
             .iter()
             .map(|(&node, json)| {
@@ -330,13 +366,13 @@ impl PBlockSimulator {
             })
             .collect::<PyResult<_>>()?;
 
-        // ── 5. Initialise block pool (one block per node) ─────────────────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 5. Initialise block pool (one block per node) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let mut pool = BlockPool::new(&qpn);
         let mut cbits: HashMap<usize, i32> = HashMap::new();
         let seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
-        // ── 6. Execute instructions in global order (epoch-parallel) ─────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 6. Execute instructions in global order (epoch-parallel) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
         let mut cursor = 0;
         while cursor < entries.len() {
@@ -433,7 +469,7 @@ impl PBlockSimulator {
             }
         }
 
-        // ── 7. Combine all remaining blocks into final result ─────────────────
+        // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 7. Combine all remaining blocks into final result ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         let final_block = pool.merge_all();
         let num_qubits = final_block.qubits.len();
         let phys_qubits = final_block.qubits.clone();
@@ -763,14 +799,19 @@ fn dispatch(
                 "remote_cx" => {
                     apply_n_qubit(&mut block.state, &m4(gates::cnot()), &lqs, n);
                 }
-                "remote_barrier" | "remote_cu1" => {
-                    // remote_barrier is a no-op; remote_cu1 is opaque with no params
+                "remote_barrier" => {}
+                "remote_cu1" => {
+                    return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                        "Symbolic 'remote_cu1' cannot be simulated natively. Distribute with lowered=True.",
+                    ));
                 }
                 "remote_epr" => {
                     apply_n_qubit(&mut block.state, &m4(gates::phi_plus()), &lqs, n);
                 }
                 other if other.starts_with("circuit-") => {
-                    // opaque Qiskit subcircuit — no-op for performance benchmarking
+                    return Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                        "Opaque symbolic subcircuit {other:?} cannot be simulated natively. Distribute with lowered=True."
+                    )));
                 }
                 "teleport" => {
                     return Err(pyo3::exceptions::PyNotImplementedError::new_err(
@@ -1133,14 +1174,20 @@ fn dispatch_par(
                 "remote_cx" => {
                     apply_n_qubit_seq(&mut block.state, &m4(gates::cnot()), &lqs, n);
                 }
-                "remote_barrier" | "remote_cu1" => {
-                    // remote_barrier is a no-op; remote_cu1 is opaque with no params
+                "remote_barrier" => {}
+                "remote_cu1" => {
+                    return Err(
+                        "Symbolic 'remote_cu1' cannot be simulated natively. Distribute with lowered=True."
+                            .to_string(),
+                    );
                 }
                 "remote_epr" => {
                     apply_n_qubit_seq(&mut block.state, &m4(gates::phi_plus()), &lqs, n);
                 }
                 other if other.starts_with("circuit-") => {
-                    // opaque Qiskit subcircuit — no-op for performance benchmarking
+                    return Err(format!(
+                        "Opaque symbolic subcircuit {other:?} cannot be simulated natively. Distribute with lowered=True."
+                    ));
                 }
                 "teleport" => {
                     return Err("Symbolic 'teleport' gate cannot be simulated natively. \

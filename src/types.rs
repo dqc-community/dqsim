@@ -12,7 +12,7 @@ pub struct Register {
     pub base: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Circuit {
     pub qregs: HashMap<String, Register>,
     #[serde(default)]

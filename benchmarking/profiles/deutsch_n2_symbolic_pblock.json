@@ -1,0 +1,66 @@
+{
+  "num_shots": 1000,
+  "num_qubits": 2,
+  "num_instructions": 6,
+  "preprocessing_ms": 0.063309,
+  "gate_fusion_ms": 0.0023209999999999997,
+  "parallel_execution_ms": 1.2756200000000002,
+  "per_shot_stats": null,
+  "total_time_ms": 1.34419,
+  "profile_schema": "shots_v1",
+  "simulator": "dqsim_pblock_symbolic",
+  "circuit_variant": "symbolic",
+  "circuit": "deutsch_n2",
+  "profile_file": "deutsch_n2_symbolic_pblock.json",
+  "run_id": "20260629_023714",
+  "comparison": {
+    "previous_profile": {
+      "num_shots": 1000,
+      "num_qubits": 2,
+      "num_instructions": 6,
+      "preprocessing_ms": 0.0771,
+      "gate_fusion_ms": 0.0023,
+      "parallel_execution_ms": 0.2938,
+      "per_shot_stats": null,
+      "total_time_ms": 0.37560000000000004,
+      "profile_schema": "shots_v1",
+      "simulator": "dqsim_pblock_symbolic",
+      "circuit_variant": "symbolic",
+      "circuit": "deutsch_n2",
+      "profile_file": "deutsch_n2_symbolic_pblock.json",
+      "run_id": "20260629_023002"
+    },
+    "metrics": {
+      "preprocessing_ms": {
+        "current": 0.063309,
+        "previous": 0.0771,
+        "delta": -0.013790999999999998,
+        "delta_percent": -17.887159533073927
+      },
+      "gate_fusion_ms": {
+        "current": 0.0023209999999999997,
+        "previous": 0.0023,
+        "delta": 2.099999999999975e-05,
+        "delta_percent": 0.9130434782608587
+      },
+      "parallel_execution_ms": {
+        "current": 1.2756200000000002,
+        "previous": 0.2938,
+        "delta": 0.9818200000000001,
+        "delta_percent": 334.17971409121856
+      },
+      "total_time_ms": {
+        "current": 1.34419,
+        "previous": 0.37560000000000004,
+        "delta": 0.96859,
+        "delta_percent": 257.87806176783806
+      },
+      "per_shot_ms": {
+        "current": 0.00134419,
+        "previous": 0.0003756,
+        "delta": 0.0009685900000000001,
+        "delta_percent": 257.8780617678381
+      }
+    }
+  }
+}

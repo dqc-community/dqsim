@@ -865,6 +865,7 @@ dependencies = [
  "aligned-vec",
  "backtrace",
  "cfg-if",
+ "criterion",
  "findshlibs",
  "inferno",
  "libc",

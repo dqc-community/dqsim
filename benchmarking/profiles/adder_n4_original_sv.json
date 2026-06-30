@@ -1,0 +1,66 @@
+{
+  "num_shots": 1000,
+  "num_qubits": 4,
+  "num_instructions": 25,
+  "preprocessing_ms": 0.085724,
+  "gate_fusion_ms": 0.00368,
+  "parallel_execution_ms": 2.910552,
+  "per_shot_stats": null,
+  "total_time_ms": 3.0052410000000003,
+  "profile_schema": "shots_v1",
+  "simulator": "dqsim_statevector",
+  "circuit_variant": "original",
+  "circuit": "adder_n4",
+  "profile_file": "adder_n4_original_sv.json",
+  "run_id": "20260629_023715",
+  "comparison": {
+    "previous_profile": {
+      "num_shots": 1000,
+      "num_qubits": 4,
+      "num_instructions": 25,
+      "preprocessing_ms": 0.1103,
+      "gate_fusion_ms": 0.0049,
+      "parallel_execution_ms": 0.3957,
+      "per_shot_stats": null,
+      "total_time_ms": 0.5124,
+      "profile_schema": "shots_v1",
+      "simulator": "dqsim_statevector",
+      "circuit_variant": "original",
+      "circuit": "adder_n4",
+      "profile_file": "adder_n4_original_sv.json",
+      "run_id": "20260629_023003"
+    },
+    "metrics": {
+      "preprocessing_ms": {
+        "current": 0.085724,
+        "previous": 0.1103,
+        "delta": -0.024576,
+        "delta_percent": -22.281051677243884
+      },
+      "gate_fusion_ms": {
+        "current": 0.00368,
+        "previous": 0.0049,
+        "delta": -0.0012199999999999997,
+        "delta_percent": -24.897959183673464
+      },
+      "parallel_execution_ms": {
+        "current": 2.910552,
+        "previous": 0.3957,
+        "delta": 2.514852,
+        "delta_percent": 635.5451099317664
+      },
+      "total_time_ms": {
+        "current": 3.0052410000000003,
+        "previous": 0.5124,
+        "delta": 2.4928410000000003,
+        "delta_percent": 486.5029274004685
+      },
+      "per_shot_ms": {
+        "current": 0.003005241,
+        "previous": 0.0005124,
+        "delta": 0.002492841,
+        "delta_percent": 486.5029274004684
+      }
+    }
+  }
+}

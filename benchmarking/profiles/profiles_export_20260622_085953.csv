@@ -1,0 +1,5 @@
+Filename,Qubits,Instructions,Shots,Preprocessing (ms),Gate Fusion (ms),Parallel Execution (ms),Total (ms),Per-Shot (ms),Per-Instruction-Per-Shot (µs)
+adder_n4_sv_20260622_085832.json,6,51,1000,0.3064,0.0306,16.1205,16.4784,0.0165,0.3161
+deutsch_n2_sv_20260622_085831.json,4,14,1000,0.2179,0.0203,6.2666,6.5224,0.0065,0.4476
+qft_n4_sv_20260622_085832.json,7,33,1000,0.2950,0.0336,19.7832,20.1424,0.0201,0.5995
+toffoli_n3_sv_20260622_085832.json,8,20,1000,0.1721,0.0217,22.5469,22.7649,0.0228,1.1273

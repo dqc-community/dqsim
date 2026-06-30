@@ -1,0 +1,120 @@
+{
+  "profile_schema": "shots_v1",
+  "simulator": "qiskit_aer_mps",
+  "backend_method": "matrix_product_state",
+  "circuit_variant": "original",
+  "timing_basis": "aer_experiment_time_taken",
+  "num_shots": 1000,
+  "num_qubits": 2,
+  "num_instructions": 7,
+  "preprocessing_ms": 0.2681279947864823,
+  "backend_setup_ms": 0.05996999971102923,
+  "gate_fusion_ms": 0.0,
+  "parallel_execution_ms": 0.425917,
+  "aer_experiment_time_taken_ms": 0.425917,
+  "aer_result_time_taken_ms": 0.7240772247314453,
+  "aer_job_wall_ms": 0.861963999341242,
+  "sample_measure_time_ms": 0.11682400000000001,
+  "wall_total_time_ms": 1.191210001707077,
+  "per_shot_stats": null,
+  "total_time_ms": 0.425917,
+  "num_count_states": 2,
+  "circuit": "deutsch_n2",
+  "profile_file": "deutsch_n2_original_aer_mps.json",
+  "run_id": "20260629_023714",
+  "comparison": {
+    "previous_profile": {
+      "profile_schema": "shots_v1",
+      "simulator": "qiskit_aer_mps",
+      "backend_method": "matrix_product_state",
+      "circuit_variant": "original",
+      "timing_basis": "aer_experiment_time_taken",
+      "num_shots": 1000,
+      "num_qubits": 2,
+      "num_instructions": 7,
+      "preprocessing_ms": 0.2669999375939369,
+      "backend_setup_ms": 0.06399978883564472,
+      "gate_fusion_ms": 0.0,
+      "parallel_execution_ms": 4.8079,
+      "aer_experiment_time_taken_ms": 4.8079,
+      "aer_result_time_taken_ms": 6.001710891723633,
+      "aer_job_wall_ms": 5.34130004234612,
+      "sample_measure_time_ms": 0.5888,
+      "wall_total_time_ms": 5.673500010743737,
+      "per_shot_stats": null,
+      "total_time_ms": 4.8079,
+      "num_count_states": 2,
+      "circuit": "deutsch_n2",
+      "profile_file": "deutsch_n2_original_aer_mps.json",
+      "run_id": "20260629_023002"
+    },
+    "metrics": {
+      "preprocessing_ms": {
+        "current": 0.2681279947864823,
+        "previous": 0.2669999375939369,
+        "delta": 0.0011280571925453842,
+        "delta_percent": 0.42249342929097383
+      },
+      "backend_setup_ms": {
+        "current": 0.05996999971102923,
+        "previous": 0.06399978883564472,
+        "delta": -0.0040297891246154904,
+        "delta_percent": -6.296566282373571
+      },
+      "gate_fusion_ms": {
+        "current": 0.0,
+        "previous": 0.0,
+        "delta": 0.0,
+        "delta_percent": null
+      },
+      "parallel_execution_ms": {
+        "current": 0.425917,
+        "previous": 4.8079,
+        "delta": -4.381983,
+        "delta_percent": -91.14130909544708
+      },
+      "aer_experiment_time_taken_ms": {
+        "current": 0.425917,
+        "previous": 4.8079,
+        "delta": -4.381983,
+        "delta_percent": -91.14130909544708
+      },
+      "aer_result_time_taken_ms": {
+        "current": 0.7240772247314453,
+        "previous": 6.001710891723633,
+        "delta": -5.2776336669921875,
+        "delta_percent": -87.93548643387757
+      },
+      "aer_job_wall_ms": {
+        "current": 0.861963999341242,
+        "previous": 5.34130004234612,
+        "delta": -4.479336043004878,
+        "delta_percent": -83.86228085845124
+      },
+      "sample_measure_time_ms": {
+        "current": 0.11682400000000001,
+        "previous": 0.5888,
+        "delta": -0.47197599999999995,
+        "delta_percent": -80.15896739130434
+      },
+      "wall_total_time_ms": {
+        "current": 1.191210001707077,
+        "previous": 5.673500010743737,
+        "delta": -4.48229000903666,
+        "delta_percent": -79.00396581561085
+      },
+      "total_time_ms": {
+        "current": 0.425917,
+        "previous": 4.8079,
+        "delta": -4.381983,
+        "delta_percent": -91.14130909544708
+      },
+      "per_shot_ms": {
+        "current": 0.000425917,
+        "previous": 0.0048079,
+        "delta": -0.004381983000000001,
+        "delta_percent": -91.14130909544708
+      }
+    }
+  }
+}

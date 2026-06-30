@@ -1,0 +1,66 @@
+{
+  "num_shots": 1000,
+  "num_qubits": 3,
+  "num_instructions": 21,
+  "preprocessing_ms": 0.051266,
+  "gate_fusion_ms": 0.0,
+  "parallel_execution_ms": 3.9933879999999995,
+  "per_shot_stats": null,
+  "total_time_ms": 4.046102,
+  "profile_schema": "shots_v1",
+  "simulator": "dqsim_mps",
+  "circuit_variant": "original",
+  "circuit": "toffoli_n3",
+  "profile_file": "toffoli_n3_original_mps.json",
+  "run_id": "20260629_023715",
+  "comparison": {
+    "previous_profile": {
+      "num_shots": 1000,
+      "num_qubits": 3,
+      "num_instructions": 21,
+      "preprocessing_ms": 0.0633,
+      "gate_fusion_ms": 0.0,
+      "parallel_execution_ms": 10.477500000000001,
+      "per_shot_stats": null,
+      "total_time_ms": 10.543800000000001,
+      "profile_schema": "shots_v1",
+      "simulator": "dqsim_mps",
+      "circuit_variant": "original",
+      "circuit": "toffoli_n3",
+      "profile_file": "toffoli_n3_original_mps.json",
+      "run_id": "20260629_023002"
+    },
+    "metrics": {
+      "preprocessing_ms": {
+        "current": 0.051266,
+        "previous": 0.0633,
+        "delta": -0.012033999999999996,
+        "delta_percent": -19.01105845181674
+      },
+      "gate_fusion_ms": {
+        "current": 0.0,
+        "previous": 0.0,
+        "delta": 0.0,
+        "delta_percent": null
+      },
+      "parallel_execution_ms": {
+        "current": 3.9933879999999995,
+        "previous": 10.477500000000001,
+        "delta": -6.484112000000001,
+        "delta_percent": -61.88606060606061
+      },
+      "total_time_ms": {
+        "current": 4.046102,
+        "previous": 10.543800000000001,
+        "delta": -6.497698000000001,
+        "delta_percent": -61.62577059504164
+      },
+      "per_shot_ms": {
+        "current": 0.004046102,
+        "previous": 0.0105438,
+        "delta": -0.0064976980000000005,
+        "delta_percent": -61.62577059504164
+      }
+    }
+  }
+}

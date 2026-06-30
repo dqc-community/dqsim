@@ -14,4 +14,8 @@ build/
 *.so
 *.dylib
 *.pyd
+*.pdb
 *.dSYM/
+
+# Local Windows-side validation scratch
+.codex-win/

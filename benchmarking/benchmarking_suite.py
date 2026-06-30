@@ -1,30 +1,51 @@
 """
 Performance benchmark: dqsim vs Qiskit Aer.
 
-Run with:  pytest benchmarking/benchmarking_suite.py -v -s
+Run with: pytest benchmarking/benchmarking_suite.py -v -s
 
-Reports per-shot latency (µs) averaged over SHOTS:
-  dqsim-sv     : StatevectorSimulator.simulate_shots(SHOTS) / SHOTS
-  dqsim-pblock : PBlockSimulator.simulate_shots(SHOTS) / SHOTS
-  aer          : AerSimulator().run(qc, shots=SHOTS) / SHOTS
+The report is split by circuit variant so each row compares simulators running the
+same circuit shape:
+  original  dqsim SV/MPS and Aer run the original QASMBench circuit
+  lowered   dqsim SV/MPS, PBlock, and Aer run the same lowered distributed circuit
+
+Aer table values use Aer's per-experiment simulator ``time_taken`` metadata,
+which excludes Python-side job setup/formatting overhead; wall times are kept in
+JSON diagnostics. Profiling data is saved to stable JSON files under
+benchmarking/profiles/. Each run clears stale JSON files, replaces the current
+files, and embeds a comparison section against the previous contents when one
+exists.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import time
 from dataclasses import dataclass
-
-import yaml
+from typing import Callable
 
 import qasmpi
-from bosonic_model.qasm import Translator
+import yaml
 from bosonic_converters import CircuitConverters
+from bosonic_model.qasm import Translator
 from bosonic_sdk.distributor.distributors.disqco_distributor import DisqcoDistributor
-from bosonic_sdk.simulation.simulator import Simulator as BosonicSimulator
 
-from dqsim import PBlockSimulator, StatevectorSimulator
+from dqsim import MpsSimulator, PBlockSimulator, StatevectorSimulator
 
+try:
+    from bosonic_converters.remote_link import (
+        RemoteLinkGatePhiPlus,
+        RemoteLinkGatePsiMinus,
+        RemoteLinkGatePsiPlus,
+    )
+    from qiskit.circuit import CircuitInstruction
+    from qiskit.circuit.library import UnitaryGate
+    from qiskit_aer import AerSimulator
+except ImportError as exc:  # pragma: no cover - depends on optional benchmark extra
+    AerSimulator = None
+    AER_IMPORT_ERROR = exc
+else:
+    AER_IMPORT_ERROR = None
 
 
 @dataclass
@@ -45,29 +66,36 @@ class BenchmarkConfig:
         ]
 
 
-
 @dataclass
-class CircuitTimings:
-    sv_shots_ms: float
-    pblock_lowered_shots_ms: float
-    pblock_symbolic_shots_ms: float | None
-    aer_shots_ms: float
+class VariantTimings:
+    num_qubits: int
+    sv_shots_ms: float | None = None
+    mps_shots_ms: float | None = None
+    pblock_shots_ms: float | None = None
+    aer_statevector_shots_ms: float | None = None
+    aer_mps_shots_ms: float | None = None
 
 
 @dataclass
 class BenchmarkResult:
     name: str
-    num_qubits: int
-    timings: CircuitTimings
-
+    original: VariantTimings
+    lowered: VariantTimings
+    symbolic_pblock_shots_ms: float | None
+    symbolic_num_qubits: int | None
+    profiles: dict[str, dict]
 
 
 class BenchmarkRunner:
     def __init__(self, config: BenchmarkConfig) -> None:
         self._config = config
         self._dist = DisqcoDistributor()
+        self._profile_dir = pathlib.Path(__file__).parent / "profiles"
+        self._profile_dir.mkdir(exist_ok=True)
+        self._previous_profiles = self._load_previous_profiles()
 
     def run_all(self) -> list[BenchmarkResult]:
+        self._clear_profile_dir()
         results = []
         total = len(self._config.circuits)
         for idx, spec in enumerate(self._config.circuits, 1):
@@ -77,94 +105,478 @@ class BenchmarkRunner:
 
     def _run_one(self, spec: CircuitSpec) -> BenchmarkResult:
         circuit = Translator().from_qasm(qasmpi.get_circuit(spec.name))
-        n = max(r.base + r.size for r in circuit.qregs.values())
+        original_qubits = self._num_qubits(circuit)
 
         distributed_lowered = self._dist.distribute(
             circuit, nodes=spec.nodes, qubits_per_node=spec.qubits_per_node, lowered=True
         )
+        lowered_monolithic = distributed_lowered.as_monolithic_circuit()
+        lowered_qubits = self._num_qubits(lowered_monolithic)
+
+        profiles: dict[str, dict] = {}
+
+        original_sv_timing, original_sv_profile = self._run_optional(
+            "dqsim-sv-original",
+            lambda: self._time_sv_shots(circuit, "original"),
+        )
+        self._store_profile(profiles, "original_sv", original_sv_profile)
+
+        original_mps_timing, original_mps_profile = self._run_optional(
+            "dqsim-mps-original",
+            lambda: self._time_mps_shots(circuit, "original"),
+        )
+        self._store_profile(profiles, "original_mps", original_mps_profile)
+
+        original_aer_sv_timing, original_aer_sv_profile = self._run_optional(
+            "aer-statevector-original",
+            lambda: self._time_aer_shots(circuit, "statevector", "original"),
+        )
+        self._store_profile(profiles, "original_aer_statevector", original_aer_sv_profile)
+
+        original_aer_mps_timing, original_aer_mps_profile = self._run_optional(
+            "aer-mps-original",
+            lambda: self._time_aer_shots(circuit, "matrix_product_state", "original"),
+        )
+        self._store_profile(profiles, "original_aer_mps", original_aer_mps_profile)
+
+        lowered_sv_timing, lowered_sv_profile = self._run_optional(
+            "dqsim-sv-lowered",
+            lambda: self._time_sv_shots(lowered_monolithic, "lowered"),
+        )
+        self._store_profile(profiles, "lowered_sv", lowered_sv_profile)
+
+        lowered_mps_timing, lowered_mps_profile = self._run_optional(
+            "dqsim-mps-lowered",
+            lambda: self._time_mps_shots(lowered_monolithic, "lowered"),
+        )
+        self._store_profile(profiles, "lowered_mps", lowered_mps_profile)
+
+        lowered_pblock_timing, lowered_pblock_profile = self._run_optional(
+            "dqsim-pblock-lowered",
+            lambda: self._time_pblock_shots(
+                distributed_lowered, "dqsim_pblock_lowered", "lowered"
+            ),
+        )
+        self._store_profile(profiles, "lowered_pblock", lowered_pblock_profile)
+
+        lowered_aer_sv_timing, lowered_aer_sv_profile = self._run_optional(
+            "aer-statevector-lowered",
+            lambda: self._time_aer_shots(lowered_monolithic, "statevector", "lowered"),
+        )
+        self._store_profile(profiles, "lowered_aer_statevector", lowered_aer_sv_profile)
+
+        lowered_aer_mps_timing, lowered_aer_mps_profile = self._run_optional(
+            "aer-mps-lowered",
+            lambda: self._time_aer_shots(
+                lowered_monolithic, "matrix_product_state", "lowered"
+            ),
+        )
+        self._store_profile(profiles, "lowered_aer_mps", lowered_aer_mps_profile)
+
+        symbolic_pblock_timing = None
+        symbolic_num_qubits = None
         try:
             distributed_symbolic = self._dist.distribute(
-                circuit, nodes=spec.nodes, qubits_per_node=spec.qubits_per_node, lowered=False
+                circuit,
+                nodes=spec.nodes,
+                qubits_per_node=spec.qubits_per_node,
+                lowered=False,
             )
-        except ValueError:
-            distributed_symbolic = None
+        except ValueError as exc:
+            print(f"    Skipped symbolic distribution: {exc}", flush=True)
+        else:
+            symbolic_num_qubits = max(
+                (q for qubits in distributed_symbolic.qubits_per_node.values() for q in qubits),
+                default=-1,
+            ) + 1
+            symbolic_pblock_timing, symbolic_pblock_profile = self._run_optional(
+                "dqsim-pblock-symbolic",
+                lambda: self._time_pblock_shots(
+                    distributed_symbolic, "dqsim_pblock_symbolic", "symbolic"
+                ),
+            )
+            self._store_profile(profiles, "symbolic_pblock", symbolic_pblock_profile)
 
-        monolithic = distributed_lowered.as_monolithic_circuit()
-
-        return BenchmarkResult(
+        result = BenchmarkResult(
             name=spec.name,
-            num_qubits=n,
-            timings=CircuitTimings(
-                sv_shots_ms=self._time_sv_shots(monolithic),
-                pblock_lowered_shots_ms=self._time_pblock_shots(distributed_lowered),
-                pblock_symbolic_shots_ms=self._time_pblock_shots(distributed_symbolic) if distributed_symbolic else None,
-                aer_shots_ms=self._time_aer_shots(monolithic),
+            original=VariantTimings(
+                num_qubits=original_qubits,
+                sv_shots_ms=original_sv_timing,
+                mps_shots_ms=original_mps_timing,
+                aer_statevector_shots_ms=original_aer_sv_timing,
+                aer_mps_shots_ms=original_aer_mps_timing,
+            ),
+            lowered=VariantTimings(
+                num_qubits=lowered_qubits,
+                sv_shots_ms=lowered_sv_timing,
+                mps_shots_ms=lowered_mps_timing,
+                pblock_shots_ms=lowered_pblock_timing,
+                aer_statevector_shots_ms=lowered_aer_sv_timing,
+                aer_mps_shots_ms=lowered_aer_mps_timing,
+            ),
+            symbolic_pblock_shots_ms=symbolic_pblock_timing,
+            symbolic_num_qubits=symbolic_num_qubits,
+            profiles=profiles,
+        )
+        self._save_profiles(result)
+        return result
+
+    @staticmethod
+    def _num_qubits(circuit) -> int:
+        return max((r.base + r.size for r in circuit.qregs.values()), default=0)
+
+    @staticmethod
+    def _run_optional(
+        label: str, fn: Callable[[], tuple[float, dict | None]]
+    ) -> tuple[float | None, dict | None]:
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - benchmark should continue per backend
+            print(f"    Skipped {label}: {type(exc).__name__}: {exc}", flush=True)
+            return None, None
+
+    @staticmethod
+    def _store_profile(profiles: dict[str, dict], key: str, profile: dict | None) -> None:
+        if profile is not None:
+            profiles[key] = profile
+
+    @staticmethod
+    def _profile_elapsed_ms(profile: dict, fallback_ms: float) -> float:
+        total = profile.get("total_time_ms")
+        if total is not None:
+            return float(total)
+        return float(
+            profile.get("preprocessing_ms", 0.0)
+            + profile.get("gate_fusion_ms", 0.0)
+            + profile.get("parallel_execution_ms", fallback_ms)
+        )
+
+    def _time_profiled_call(
+        self, simulator_name: str, circuit_variant: str, fn: Callable[[], object]
+    ) -> tuple[float, dict | None]:
+        t0 = time.perf_counter()
+        result = fn()
+        elapsed_ms = (time.perf_counter() - t0) * 1_000
+
+        profile_obj = result.get("profile") if isinstance(result, dict) else None
+        if profile_obj is None:
+            return elapsed_ms, None
+
+        profile = dict(profile_obj)
+        profile.setdefault("profile_schema", "shots_v1")
+        profile.setdefault("simulator", simulator_name)
+        profile["circuit_variant"] = circuit_variant
+        return self._profile_elapsed_ms(profile, elapsed_ms), profile
+
+    def _time_sv_shots(self, circuit, circuit_variant: str) -> tuple[float, dict | None]:
+        sim = StatevectorSimulator(seed=self._config.seed)
+        return self._time_profiled_call(
+            "dqsim_statevector",
+            circuit_variant,
+            lambda: sim.simulate_shots(
+                circuit, shots=self._config.shots, collect_profile=True
             ),
         )
 
-    def _elapsed_ms(self, fn) -> float:
-        t0 = time.perf_counter()
-        fn()
-        return (time.perf_counter() - t0) * 1_000
+    def _time_mps_shots(self, circuit, circuit_variant: str) -> tuple[float, dict | None]:
+        sim = MpsSimulator(seed=self._config.seed)
+        return self._time_profiled_call(
+            "dqsim_mps",
+            circuit_variant,
+            lambda: sim.simulate_shots(
+                circuit, shots=self._config.shots, collect_profile=True
+            ),
+        )
 
-    def _time_sv_shots(self, circuit) -> float:
-        sim = StatevectorSimulator(seed=self._config.seed)
-        return self._elapsed_ms(lambda: sim.simulate_shots(circuit, shots=self._config.shots))
-
-    def _time_pblock_shots(self, distributed) -> float:
+    def _time_pblock_shots(
+        self, distributed, simulator_name: str, circuit_variant: str
+    ) -> tuple[float, dict | None]:
         sim = PBlockSimulator(seed=self._config.seed)
-        return self._elapsed_ms(lambda: sim.simulate_shots(distributed, shots=self._config.shots))
+        return self._time_profiled_call(
+            simulator_name,
+            circuit_variant,
+            lambda: sim.simulate_shots(
+                distributed, shots=self._config.shots, collect_profile=True
+            ),
+        )
 
-    def _time_aer_shots(self, circuit) -> float:
-        qc, sim, backend = self._prepare_aer(circuit)
-        return self._elapsed_ms(lambda: sim.simulate(qc, backend, shots=self._config.shots))
+    def _time_aer_shots(
+        self, circuit, method: str, circuit_variant: str
+    ) -> tuple[float, dict | None]:
+        if AerSimulator is None:
+            raise RuntimeError(f"qiskit-aer is not available: {AER_IMPORT_ERROR}")
 
-    def _prepare_aer(self, circuit):
+        total_t0 = time.perf_counter()
+        prep_t0 = time.perf_counter()
+        qc = self._prepare_qiskit_circuit(circuit)
+        preprocessing_ms = (time.perf_counter() - prep_t0) * 1_000
+
+        backend_t0 = time.perf_counter()
+        backend = AerSimulator(method=method, seed_simulator=self._config.seed)
+        backend_setup_ms = (time.perf_counter() - backend_t0) * 1_000
+
+        exec_t0 = time.perf_counter()
+        result = backend.run(
+            qc, shots=self._config.shots, seed_simulator=self._config.seed
+        ).result()
+        counts = result.get_counts()
+        aer_job_wall_ms = (time.perf_counter() - exec_t0) * 1_000
+        wall_total_time_ms = (time.perf_counter() - total_t0) * 1_000
+
+        experiment = result.results[0]
+        experiment_metadata = dict(getattr(experiment, "metadata", {}) or {})
+        experiment_time_s = getattr(experiment, "time_taken", None)
+        if experiment_time_s is None:
+            experiment_time_s = experiment_metadata.get("time_taken")
+
+        if experiment_time_s is None:
+            aer_experiment_time_ms = aer_job_wall_ms
+            timing_basis = "aer_job_wall_fallback"
+        else:
+            aer_experiment_time_ms = float(experiment_time_s) * 1_000
+            timing_basis = "aer_experiment_time_taken"
+
+        result_time_taken = getattr(result, "time_taken", None)
+        aer_result_time_taken_ms = (
+            None if result_time_taken is None else float(result_time_taken) * 1_000
+        )
+        sample_measure_time = experiment_metadata.get("sample_measure_time")
+        sample_measure_time_ms = (
+            None if sample_measure_time is None else float(sample_measure_time) * 1_000
+        )
+
+        simulator_name = (
+            "qiskit_aer_mps"
+            if method == "matrix_product_state"
+            else "qiskit_aer_statevector"
+        )
+        profile = {
+            "profile_schema": "shots_v1",
+            "simulator": simulator_name,
+            "backend_method": method,
+            "circuit_variant": circuit_variant,
+            "timing_basis": timing_basis,
+            "num_shots": self._config.shots,
+            "num_qubits": qc.num_qubits,
+            "num_instructions": len(qc.data),
+            "preprocessing_ms": preprocessing_ms,
+            "backend_setup_ms": backend_setup_ms,
+            "gate_fusion_ms": 0.0,
+            "parallel_execution_ms": aer_experiment_time_ms,
+            "aer_experiment_time_taken_ms": aer_experiment_time_ms,
+            "aer_result_time_taken_ms": aer_result_time_taken_ms,
+            "aer_job_wall_ms": aer_job_wall_ms,
+            "sample_measure_time_ms": sample_measure_time_ms,
+            "wall_total_time_ms": wall_total_time_ms,
+            "per_shot_stats": None,
+            "total_time_ms": aer_experiment_time_ms,
+            "num_count_states": len(counts),
+        }
+        return self._profile_elapsed_ms(profile, profile["total_time_ms"]), profile
+
+    @staticmethod
+    def _prepare_qiskit_circuit(circuit):
         qc = CircuitConverters.to_qiskit(circuit)
+        BenchmarkRunner._substitute_remote_gates(qc)
         if qc.num_clbits == 0:
             qc.measure_all()
-        sim = BosonicSimulator()
-        qc = sim.prepare(qc)
-        backend = sim.build_backend("statevector")
-        return qc, sim, backend
+        return qc
 
+    @staticmethod
+    def _substitute_remote_gates(qc) -> None:
+        phi_plus = UnitaryGate(RemoteLinkGatePhiPlus().to_matrix(), label="remote_link_phi_plus")
+        psi_minus = UnitaryGate(RemoteLinkGatePsiMinus().to_matrix(), label="remote_link_psi_minus")
+        psi_plus = UnitaryGate(RemoteLinkGatePsiPlus().to_matrix(), label="remote_link_psi_plus")
+        for i, ci in enumerate(qc.data):
+            op = ci.operation
+            name = getattr(op, "name", "")
+            if isinstance(op, RemoteLinkGatePhiPlus) or name in {
+                "remote_link_phi_plus",
+                "remote_epr",
+            }:
+                qc.data[i] = CircuitInstruction(phi_plus, ci.qubits, ci.clbits)
+            elif isinstance(op, RemoteLinkGatePsiMinus) or name == "remote_link_psi_minus":
+                qc.data[i] = CircuitInstruction(psi_minus, ci.qubits, ci.clbits)
+            elif isinstance(op, RemoteLinkGatePsiPlus) or name == "remote_link_psi_plus":
+                qc.data[i] = CircuitInstruction(psi_plus, ci.qubits, ci.clbits)
+
+    @staticmethod
+    def _profile_snapshot(profile: dict) -> dict:
+        snapshot = dict(profile)
+        snapshot.pop("comparison", None)
+        return snapshot
+
+    @staticmethod
+    def _metric_delta(current: float | None, previous: float | None) -> dict | None:
+        if current is None or previous is None:
+            return None
+
+        delta = current - previous
+        delta_percent = None if previous == 0 else 100.0 * delta / previous
+        return {
+            "current": current,
+            "previous": previous,
+            "delta": delta,
+            "delta_percent": delta_percent,
+        }
+
+    @staticmethod
+    def _per_shot_ms(profile: dict) -> float | None:
+        shots = profile.get("num_shots")
+        total_ms = profile.get("total_time_ms")
+        if not shots or total_ms is None:
+            return None
+        return total_ms / shots
+
+    @classmethod
+    def _build_comparison(cls, current: dict, previous: dict | None) -> dict:
+        if previous is None:
+            return {
+                "previous_profile": None,
+                "metrics": {},
+                "note": "No previous profile was available; this run is the baseline for the next comparison.",
+            }
+
+        metrics = {}
+        for key in (
+            "preprocessing_ms",
+            "backend_setup_ms",
+            "gate_fusion_ms",
+            "parallel_execution_ms",
+            "aer_experiment_time_taken_ms",
+            "aer_result_time_taken_ms",
+            "aer_job_wall_ms",
+            "sample_measure_time_ms",
+            "wall_total_time_ms",
+            "total_time_ms",
+        ):
+            metric = cls._metric_delta(current.get(key), previous.get(key))
+            if metric is not None:
+                metrics[key] = metric
+
+        per_shot_metric = cls._metric_delta(
+            cls._per_shot_ms(current), cls._per_shot_ms(previous)
+        )
+        if per_shot_metric is not None:
+            metrics["per_shot_ms"] = per_shot_metric
+
+        return {
+            "previous_profile": cls._profile_snapshot(previous),
+            "metrics": metrics,
+        }
+
+    def _load_previous_profiles(self) -> dict[str, dict]:
+        profiles = {}
+        for filename in self._profile_dir.glob("*.json"):
+            try:
+                with open(filename, encoding="utf-8") as f:
+                    profiles[filename.name] = json.load(f)
+            except json.JSONDecodeError:
+                print(f"    Ignoring unreadable previous profile: {filename}", flush=True)
+        return profiles
+
+    def _clear_profile_dir(self) -> None:
+        for pattern in ("*.json", "*.json.tmp"):
+            for filename in self._profile_dir.glob(pattern):
+                filename.unlink()
+
+    def _save_profiles(self, result: BenchmarkResult) -> None:
+        run_id = time.strftime("%Y%m%d_%H%M%S")
+        for suffix, profile in result.profiles.items():
+            filename = self._profile_dir / f"{result.name}_{suffix}.json"
+            previous = self._previous_profiles.get(filename.name)
+
+            profile = dict(profile)
+            profile.setdefault("circuit", result.name)
+            profile["profile_file"] = filename.name
+            profile["run_id"] = run_id
+            profile["comparison"] = self._build_comparison(profile, previous)
+
+            tmp_filename = filename.with_suffix(".json.tmp")
+            with open(tmp_filename, "w", encoding="utf-8") as f:
+                json.dump(profile, f, indent=2)
+                f.write("\n")
+            tmp_filename.replace(filename)
+            print(f"    Saved {suffix} profile: {filename}", flush=True)
 
 
 class BenchmarkReporter:
-    _HEADER = (
+    _ORIGINAL_HEADER = (
         f"{'Circuit':<16}  {'Qb':>4}  "
-        f"{'sv shot(µs)':>12}  {'pblock(lowered=T)':>18}  {'pblock(lowered=F)':>18}  {'aer shot(µs)':>12}"
+        f"{'dqsim-sv(us)':>14}  {'dqsim-mps(us)':>14}  "
+        f"{'aer-sv(us)':>12}  {'aer-mps(us)':>12}"
     )
-    _SEP = "-" * len(_HEADER)
+    _LOWERED_HEADER = (
+        f"{'Circuit':<16}  {'Qb':>4}  "
+        f"{'dqsim-sv(us)':>14}  {'dqsim-mps(us)':>14}  "
+        f"{'pblock(us)':>12}  {'aer-sv(us)':>12}  {'aer-mps(us)':>12}"
+    )
+    _SYMBOLIC_HEADER = f"{'Circuit':<16}  {'Qb':>4}  {'pblock-symbolic(us)':>20}"
 
     def __init__(self, config: BenchmarkConfig) -> None:
         self._shots = config.shots
 
     def print(self, results: list[BenchmarkResult]) -> None:
-        print(f"\n\nPerformance: dqsim vs Qiskit Aer  (SHOTS={self._shots}, single-call timing)\n")
-        print(self._HEADER)
-        print(self._SEP)
-        for r in results:
-            print(self._format_row(r))
-        print(self._SEP)
-
-    def _format_row(self, r: BenchmarkResult) -> str:
-        t = r.timings
-        sv_us = t.sv_shots_ms / self._shots * 1_000
-        pblock_lowered_us = t.pblock_lowered_shots_ms / self._shots * 1_000
-        pblock_symbolic_us = t.pblock_symbolic_shots_ms / self._shots * 1_000 if t.pblock_symbolic_shots_ms is not None else None
-        aer_us = t.aer_shots_ms / self._shots * 1_000
-
-        return (
-            f"{r.name:<16}  {r.num_qubits:>4}  "
-            f"{sv_us:>12.2f}  {pblock_lowered_us:>18.2f}  {self._fmt_ms(pblock_symbolic_us, 18)}  {aer_us:>12.2f}"
+        print(
+            f"\n\nOriginal circuit performance "
+            f"(SHOTS={self._shots}, single-call timing)\n"
         )
+        self._print_table(self._ORIGINAL_HEADER, self._format_original_row, results)
+
+        print(
+            f"\n\nLowered distributed-circuit performance "
+            f"(SHOTS={self._shots}, single-call timing)\n"
+        )
+        self._print_table(self._LOWERED_HEADER, self._format_lowered_row, results)
+
+        if any(r.symbolic_num_qubits is not None for r in results):
+            print(
+                "\n\nSymbolic PBlock smoke timing "
+                "(not cross-simulator; unsupported symbolic gates are skipped)\n"
+            )
+            self._print_table(self._SYMBOLIC_HEADER, self._format_symbolic_row, results)
 
     @staticmethod
-    def _fmt_ms(v: float | None, w: int) -> str:
-        return f"{v:>{w}.2f}" if v is not None else f"{'N/A':>{w}}"
+    def _print_table(header: str, row_fn: Callable[[BenchmarkResult], str], results) -> None:
+        sep = "-" * len(header)
+        print(header)
+        print(sep)
+        for result in results:
+            print(row_fn(result))
+        print(sep)
 
+    def _format_original_row(self, r: BenchmarkResult) -> str:
+        t = r.original
+        return (
+            f"{r.name:<16}  {t.num_qubits:>4}  "
+            f"{self._fmt_us(t.sv_shots_ms, 14)}  "
+            f"{self._fmt_us(t.mps_shots_ms, 14)}  "
+            f"{self._fmt_us(t.aer_statevector_shots_ms, 12)}  "
+            f"{self._fmt_us(t.aer_mps_shots_ms, 12)}"
+        )
 
+    def _format_lowered_row(self, r: BenchmarkResult) -> str:
+        t = r.lowered
+        return (
+            f"{r.name:<16}  {t.num_qubits:>4}  "
+            f"{self._fmt_us(t.sv_shots_ms, 14)}  "
+            f"{self._fmt_us(t.mps_shots_ms, 14)}  "
+            f"{self._fmt_us(t.pblock_shots_ms, 12)}  "
+            f"{self._fmt_us(t.aer_statevector_shots_ms, 12)}  "
+            f"{self._fmt_us(t.aer_mps_shots_ms, 12)}"
+        )
+
+    def _format_symbolic_row(self, r: BenchmarkResult) -> str:
+        q = "N/A" if r.symbolic_num_qubits is None else str(r.symbolic_num_qubits)
+        return (
+            f"{r.name:<16}  {q:>4}  "
+            f"{self._fmt_us(r.symbolic_pblock_shots_ms, 20)}"
+        )
+
+    def _fmt_us(self, value_ms: float | None, width: int) -> str:
+        if value_ms is None:
+            return f"{'N/A':>{width}}"
+        return f"{value_ms / self._shots * 1_000:>{width}.2f}"
 
 
 _SUITE_FILE = pathlib.Path(__file__).parent / "benchmarking_suite.yaml"

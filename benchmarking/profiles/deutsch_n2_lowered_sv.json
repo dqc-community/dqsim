@@ -1,0 +1,66 @@
+{
+  "num_shots": 1000,
+  "num_qubits": 4,
+  "num_instructions": 14,
+  "preprocessing_ms": 0.107302,
+  "gate_fusion_ms": 0.00279,
+  "parallel_execution_ms": 5.08983,
+  "per_shot_stats": null,
+  "total_time_ms": 5.202733,
+  "profile_schema": "shots_v1",
+  "simulator": "dqsim_statevector",
+  "circuit_variant": "lowered",
+  "circuit": "deutsch_n2",
+  "profile_file": "deutsch_n2_lowered_sv.json",
+  "run_id": "20260629_023714",
+  "comparison": {
+    "previous_profile": {
+      "num_shots": 1000,
+      "num_qubits": 4,
+      "num_instructions": 14,
+      "preprocessing_ms": 0.1134,
+      "gate_fusion_ms": 0.0035,
+      "parallel_execution_ms": 0.5228,
+      "per_shot_stats": null,
+      "total_time_ms": 0.6415000000000001,
+      "profile_schema": "shots_v1",
+      "simulator": "dqsim_statevector",
+      "circuit_variant": "lowered",
+      "circuit": "deutsch_n2",
+      "profile_file": "deutsch_n2_lowered_sv.json",
+      "run_id": "20260629_023002"
+    },
+    "metrics": {
+      "preprocessing_ms": {
+        "current": 0.107302,
+        "previous": 0.1134,
+        "delta": -0.006098000000000006,
+        "delta_percent": -5.377425044091716
+      },
+      "gate_fusion_ms": {
+        "current": 0.00279,
+        "previous": 0.0035,
+        "delta": -0.0007100000000000001,
+        "delta_percent": -20.28571428571429
+      },
+      "parallel_execution_ms": {
+        "current": 5.08983,
+        "previous": 0.5228,
+        "delta": 4.56703,
+        "delta_percent": 873.571155317521
+      },
+      "total_time_ms": {
+        "current": 5.202733,
+        "previous": 0.6415000000000001,
+        "delta": 4.5612330000000005,
+        "delta_percent": 711.0261886204208
+      },
+      "per_shot_ms": {
+        "current": 0.005202733,
+        "previous": 0.0006415,
+        "delta": 0.0045612330000000005,
+        "delta_percent": 711.026188620421
+      }
+    }
+  }
+}

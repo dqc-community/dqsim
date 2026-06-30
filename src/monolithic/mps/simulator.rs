@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use nalgebra::DMatrix;
 use num_complex::Complex64;
@@ -9,6 +10,7 @@ use rand_chacha::ChaCha8Rng;
 
 use crate::gates;
 use crate::monolithic::statevector::SimulationResult;
+use crate::profiling::{ShotLoopProfiler, ShotsProfile};
 use crate::types::{format_cbits, Circuit, Instruction};
 
 type C = Complex64;
@@ -149,9 +151,9 @@ impl Mps {
         }
 
         let svd = theta.svd(true, true);
-        let u = svd.u.ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("MPS SVD did not return U")
-        })?;
+        let u = svd
+            .u
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("MPS SVD did not return U"))?;
         let vt = svd.v_t.ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("MPS SVD did not return Vt")
         })?;
@@ -318,24 +320,34 @@ impl MpsSimulator {
         ))
     }
 
-    #[pyo3(signature = (circuit, shots=1000))]
+    #[pyo3(signature = (circuit, shots=1000, collect_profile=false))]
     pub fn simulate_shots(
         &self,
         py: Python,
         circuit: &Bound<PyAny>,
         shots: usize,
+        collect_profile: bool,
     ) -> PyResult<PyObject> {
+        let total_t0 = Instant::now();
+        let preprocessing_t0 = Instant::now();
         let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
         let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
         })?;
 
+        let num_qubits = rust_circuit.num_qubits();
+        let num_instructions = rust_circuit.instructions.len();
         let num_cbits = rust_circuit.num_cbits();
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
+        let preprocessing_ms = preprocessing_t0.elapsed().as_secs_f64() * 1000.0;
+
+        let shot_loop_profiler =
+            ShotLoopProfiler::start("mps", num_qubits, shots, num_instructions);
+        let exec_t0 = Instant::now();
         let mut counts: HashMap<String, usize> = HashMap::new();
         for shot in 0..shots {
             let mut mps = Mps::new(
-                rust_circuit.num_qubits(),
+                num_qubits,
                 self.max_bond_dimension,
                 self.truncation_threshold,
             );
@@ -347,11 +359,42 @@ impl MpsSimulator {
             let key = format_cbits(&cbits, num_cbits);
             *counts.entry(key).or_insert(0) += 1;
         }
+        let parallel_execution_ms = exec_t0.elapsed().as_secs_f64() * 1000.0;
+        if let Some(profiler) = shot_loop_profiler {
+            profiler.finish();
+        }
 
         let d = PyDict::new_bound(py);
         for (key, value) in &counts {
             d.set_item(key, value)?;
         }
+
+        if collect_profile {
+            let profile = ShotsProfile {
+                num_shots: shots,
+                num_qubits,
+                num_instructions,
+                preprocessing_ms,
+                gate_fusion_ms: 0.0,
+                parallel_execution_ms,
+                per_shot_stats: None,
+                total_time_ms: total_t0.elapsed().as_secs_f64() * 1000.0,
+            };
+
+            let profile_json_str = profile.to_json_string().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Profile serialization error: {e}"
+                ))
+            })?;
+            let json_module = py.import_bound("json")?;
+            let profile_dict = json_module.call_method1("loads", (&profile_json_str,))?;
+
+            let result_dict = PyDict::new_bound(py);
+            result_dict.set_item("counts", &d)?;
+            result_dict.set_item("profile", &profile_dict)?;
+            return Ok(result_dict.into());
+        }
+
         Ok(d.into())
     }
 }
@@ -460,8 +503,17 @@ fn run_instruction(
             "remote_cx" => {
                 mps.apply_2q(qubits[0], qubits[1], &gates::cnot())?;
             }
-            "remote_barrier" | "remote_cu1" => {}
-            other if other.starts_with("circuit-") => {}
+            "remote_barrier" => {}
+            "remote_cu1" => {
+                return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                    "Symbolic 'remote_cu1' cannot be simulated natively. Distribute with lowered=True.",
+                ));
+            }
+            other if other.starts_with("circuit-") => {
+                return Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                    "Opaque symbolic subcircuit {other:?} cannot be simulated natively. Distribute with lowered=True."
+                )));
+            }
             other => {
                 return Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
                     "MPS simulator does not support generic gate {other:?}"

@@ -14,7 +14,7 @@ use crate::engine::{
     measure_qubit, measure_qubit_seq, sample_counts,
 };
 use crate::gates;
-use crate::profiling::ShotLoopProfiler;
+use crate::profiling::{ShotLoopProfiler, ShotsProfile};
 use crate::types::{format_cbits, fuse_circuit, Circuit, FusedInstruction, Instruction};
 
 type C = Complex64;
@@ -203,20 +203,29 @@ impl StatevectorSimulator {
     }
 
     /// Run the circuit `shots` times independently, collapsing state on every mid-circuit
-    /// measurement per shot. Returns a dict[str, int] of bitstring counts — the true
+    /// measurement per shot. Returns a dict[str, int] of bitstring counts Ã¢â‚¬â€ the true
     /// shot distribution including classically-conditioned corrections.
-    #[pyo3(signature = (circuit, shots=1000))]
+    ///
+    /// Returns: (counts_dict, profile_dict)
+    /// The profile_dict contains detailed timing information if available.
+    #[pyo3(signature = (circuit, shots=1000, collect_profile=false))]
     pub fn simulate_shots(
         &self,
         py: Python,
         circuit: &Bound<PyAny>,
         shots: usize,
+        collect_profile: bool,
     ) -> PyResult<PyObject> {
+        let total_t0 = Instant::now();
+
+        // PREPROCESSING: Circuit deserialization
+        let preproc_t0 = Instant::now();
         let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
 
         let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
         })?;
+        let preprocessing_ms = preproc_t0.elapsed().as_secs_f64() * 1000.0;
 
         let n = rust_circuit.num_qubits();
         let num_cbits = rust_circuit.num_cbits();
@@ -228,10 +237,16 @@ impl StatevectorSimulator {
             s
         };
 
-        // Fuse consecutive single-qubit gates once, before the parallel shot loop.
+        // GATE FUSION: Fuse consecutive single-qubit gates
+        let fusion_t0 = Instant::now();
         let fused = fuse_circuit(&rust_circuit.instructions);
+        let gate_fusion_ms = fusion_t0.elapsed().as_secs_f64() * 1000.0;
+        let num_instructions = fused.len();
 
-        let shot_loop_profiler = ShotLoopProfiler::start("statevector", n, shots, fused.len());
+        let shot_loop_profiler = ShotLoopProfiler::start("statevector", n, shots, num_instructions);
+
+        // PARALLEL EXECUTION: Run shots
+        let exec_t0 = Instant::now();
         let counts = py
             .allow_threads(|| -> Result<HashMap<String, usize>, String> {
                 (0..shots)
@@ -258,14 +273,51 @@ impl StatevectorSimulator {
                     })
             })
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+
+        let parallel_execution_ms = exec_t0.elapsed().as_secs_f64() * 1000.0;
+
         if let Some(profiler) = shot_loop_profiler {
             profiler.finish();
         }
 
+        // Build result dict
         let d = PyDict::new_bound(py);
         for (k, v) in &counts {
             d.set_item(k, v)?;
         }
+
+        // Build profile if requested
+        if collect_profile {
+            let total_time_ms = total_t0.elapsed().as_secs_f64() * 1000.0;
+
+            let profile = ShotsProfile {
+                num_shots: shots,
+                num_qubits: n,
+                num_instructions,
+                preprocessing_ms,
+                gate_fusion_ms,
+                parallel_execution_ms,
+                per_shot_stats: None,
+                total_time_ms,
+            };
+
+            let profile_json_str = profile.to_json_string().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Profile serialization error: {e}"
+                ))
+            })?;
+
+            // Parse JSON string to Python dict
+            let json_module = py.import_bound("json")?;
+            let profile_dict = json_module.call_method1("loads", (&profile_json_str,))?;
+
+            // Return dict with both counts and profile
+            let result_dict = PyDict::new_bound(py);
+            result_dict.set_item("counts", &d)?;
+            result_dict.set_item("profile", &profile_dict)?;
+            return Ok(result_dict.into());
+        }
+
         Ok(d.into())
     }
 
@@ -274,12 +326,12 @@ impl StatevectorSimulator {
         // 1. Serialize entire circuit to JSON (one boundary crossing)
         let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
 
-        // 2. Deserialize in Rust — no more Python calls until we return
+        // 2. Deserialize in Rust Ã¢â‚¬â€ no more Python calls until we return
         let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
         })?;
 
-        // 3. Initialise statevector |0...0⟩
+        // 3. Initialise statevector |0...0Ã¢Å¸Â©
         let n = rust_circuit.num_qubits();
         let mut state = vec![C::new(0.0, 0.0); 1 << n];
         state[0] = C::new(1.0, 0.0);
@@ -634,8 +686,13 @@ fn run_instruction(
                 "remote_epr" => {
                     do_nq(state, &m4(gates::phi_plus()), qubits, n, acc);
                 }
-                "remote_barrier" | "remote_cu1" => {
+                "remote_barrier" => {
                     // no-op
+                }
+                "remote_cu1" => {
+                    return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                        "Symbolic 'remote_cu1' cannot be simulated natively. Distribute with lowered=True.",
+                    ));
                 }
                 other => {
                     return Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
@@ -961,11 +1018,19 @@ fn run_instruction_par(
                 "remote_epr" => {
                     apply_n_qubit_seq(state, &m4(gates::phi_plus()), qubits, n);
                 }
-                "remote_barrier" | "remote_cu1" => {
+                "remote_barrier" => {
                     // no-op
                 }
+                "remote_cu1" => {
+                    return Err(
+                        "Symbolic 'remote_cu1' cannot be simulated natively. Distribute with lowered=True."
+                            .to_string(),
+                    );
+                }
                 other if other.starts_with("circuit-") => {
-                    // opaque Qiskit subcircuit — no-op
+                    return Err(format!(
+                        "Opaque symbolic subcircuit {other:?} cannot be simulated natively. Distribute with lowered=True."
+                    ));
                 }
                 other => {
                     return Err(format!(
@@ -1078,7 +1143,7 @@ fn do_mq(
 }
 
 // ---------------------------------------------------------------------------
-// Matrix-to-Vec converters (fixed-size arrays → Vec<Vec<C>> for apply_n_qubit)
+// Matrix-to-Vec converters (fixed-size arrays Ã¢â€ â€™ Vec<Vec<C>> for apply_n_qubit)
 // ---------------------------------------------------------------------------
 
 fn m4(m: [[C; 4]; 4]) -> Vec<Vec<C>> {

@@ -150,6 +150,72 @@ pub struct ShotsProfile {
     pub parallel_execution_ms: f64,
     /// Per-shot execution statistics (optional, only if detailed=true)
     pub per_shot_stats: Option<Vec<ShotStats>>,
+    /// Whether the statevector SIMD path was active for this profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_simd_enabled: Option<bool>,
+    /// SIMD backend used by statevector, when active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_simd_backend: Option<String>,
+    /// Whether this statevector profile was large enough to use the SIMD gate path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_simd_used: Option<bool>,
+    /// Minimum qubit count required before the default SIMD path is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_simd_min_qubits: Option<usize>,
+    /// Whether specialized fixed two-qubit statevector kernels were requested.
+    #[serde(
+        rename = "statevector_2q_kernels_enabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub statevector_two_qubit_kernels_enabled: Option<bool>,
+    /// Whether this statevector profile contained gates handled by the specialized kernels.
+    #[serde(
+        rename = "statevector_2q_kernels_used",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub statevector_two_qubit_kernels_used: Option<bool>,
+    /// Gate names covered by the specialized fixed two-qubit kernels.
+    #[serde(
+        rename = "statevector_2q_kernel_gates",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub statevector_two_qubit_kernel_gates: Option<String>,
+    /// Whether statevector shot branching/batching was requested and available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_shot_branching_enabled: Option<bool>,
+    /// Whether this profile actually used the shot branching/batching path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_shot_branching_used: Option<bool>,
+    /// Branching strategy used by the statevector shot loop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_shot_branching_strategy: Option<String>,
+    /// Whether MPS shot branching/batching was requested and available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_shot_branching_enabled: Option<bool>,
+    /// Whether this profile actually used the MPS shot branching/batching path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_shot_branching_used: Option<bool>,
+    /// Branching strategy used by the MPS shot loop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_shot_branching_strategy: Option<String>,
+    /// Whether statevector qubit truncation/remapping was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_qubit_truncation_enabled: Option<bool>,
+    /// Whether this profile actually removed one or more qubits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_qubit_truncation_used: Option<bool>,
+    /// Truncation strategy used by the statevector shot loop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_qubit_truncation_strategy: Option<String>,
+    /// Original circuit qubit count before truncation/remapping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_original_num_qubits: Option<usize>,
+    /// Effective simulated qubit count after truncation/remapping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_effective_num_qubits: Option<usize>,
+    /// Original qubit indices removed by truncation/remapping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statevector_removed_qubits: Option<Vec<usize>>,
     /// Total time including preprocessing and fusion in milliseconds
     pub total_time_ms: f64,
 }

@@ -22,6 +22,23 @@ def _fmt_optional_ms(value) -> str:
     return f"{float(value):.4f}"
 
 
+def _comparison_counterpart_count(data: dict) -> int:
+    comparison = data.get("aer_function_comparison") or {}
+    return len(comparison.get("counterparts") or [])
+
+
+def _fmt_optional_bool(value) -> str:
+    if value is None:
+        return ""
+    return "true" if value else "false"
+
+
+def _fmt_optional_list(value) -> str:
+    if not value:
+        return ""
+    return ",".join(str(item) for item in value)
+
+
 def _load_profiles() -> list[tuple[Path, dict]]:
     profile_dir = Path(__file__).parent.parent / "benchmarking" / "profiles"
     profiles = sorted(profile_dir.glob("*.json"))
@@ -64,7 +81,28 @@ def export_to_csv(output_path: Optional[Path] = None) -> None:
                 "Aer Experiment Time (ms)",
                 "Aer Result Time (ms)",
                 "Aer Job Wall (ms)",
+                "Aer Controller Execute (ms)",
+                "Aer Fusion (ms)",
+                "Aer Sample Measure (ms)",
                 "Wall Total (ms)",
+                "Aer Wall Overhead (ms)",
+                "Aer Function Counterparts",
+                "Statevector SIMD Enabled",
+                "Statevector SIMD Used",
+                "Statevector SIMD Backend",
+                "Statevector SIMD Min Qubits",
+                "Statevector 2Q Kernels Enabled",
+                "Statevector 2Q Kernels Used",
+                "Statevector 2Q Kernel Gates",
+                "Statevector Shot Branching Enabled",
+                "Statevector Shot Branching Used",
+                "Statevector Shot Branching Strategy",
+                "Statevector Qubit Truncation Enabled",
+                "Statevector Qubit Truncation Used",
+                "Statevector Qubit Truncation Strategy",
+                "Statevector Original Qubits",
+                "Statevector Effective Qubits",
+                "Statevector Removed Qubits",
                 "Per-Shot (ms)",
                 "Per-Instruction-Per-Shot (us)",
             ]
@@ -98,7 +136,28 @@ def export_to_csv(output_path: Optional[Path] = None) -> None:
                     _fmt_optional_ms(data.get("aer_experiment_time_taken_ms")),
                     _fmt_optional_ms(data.get("aer_result_time_taken_ms")),
                     _fmt_optional_ms(data.get("aer_job_wall_ms")),
+                    _fmt_optional_ms(data.get("aer_time_taken_execute_ms")),
+                    _fmt_optional_ms(data.get("aer_fusion_time_taken_ms")),
+                    _fmt_optional_ms(data.get("sample_measure_time_ms")),
                     _fmt_optional_ms(data.get("wall_total_time_ms")),
+                    _fmt_optional_ms(data.get("aer_wall_overhead_ms")),
+                    _comparison_counterpart_count(data),
+                    _fmt_optional_bool(data.get("statevector_simd_enabled")),
+                    _fmt_optional_bool(data.get("statevector_simd_used")),
+                    data.get("statevector_simd_backend") or "",
+                    data.get("statevector_simd_min_qubits") or "",
+                    _fmt_optional_bool(data.get("statevector_2q_kernels_enabled")),
+                    _fmt_optional_bool(data.get("statevector_2q_kernels_used")),
+                    data.get("statevector_2q_kernel_gates") or "",
+                    _fmt_optional_bool(data.get("statevector_shot_branching_enabled")),
+                    _fmt_optional_bool(data.get("statevector_shot_branching_used")),
+                    data.get("statevector_shot_branching_strategy") or "",
+                    _fmt_optional_bool(data.get("statevector_qubit_truncation_enabled")),
+                    _fmt_optional_bool(data.get("statevector_qubit_truncation_used")),
+                    data.get("statevector_qubit_truncation_strategy") or "",
+                    data.get("statevector_original_num_qubits") or "",
+                    data.get("statevector_effective_num_qubits") or "",
+                    _fmt_optional_list(data.get("statevector_removed_qubits")),
                     f"{per_shot_ms:.4f}",
                     f"{per_inst_per_shot_us:.4f}",
                 ]
@@ -150,7 +209,28 @@ def export_to_html(output_path: Optional[Path] = None) -> None:
             <th>Parallel Exec (ms)</th>
             <th>Total (ms)</th>
             <th>Aer Job Wall (ms)</th>
+            <th>Aer Controller Exec (ms)</th>
+            <th>Aer Fusion (ms)</th>
+            <th>Aer Sample Measure (ms)</th>
             <th>Wall Total (ms)</th>
+            <th>Aer Wall Overhead (ms)</th>
+            <th>Aer Function Counterparts</th>
+            <th>SV SIMD Enabled</th>
+            <th>SV SIMD Used</th>
+            <th>SV SIMD Backend</th>
+            <th>SV SIMD Min Qubits</th>
+            <th>SV 2Q Kernels Enabled</th>
+            <th>SV 2Q Kernels Used</th>
+            <th>SV 2Q Kernel Gates</th>
+            <th>SV Branching Enabled</th>
+            <th>SV Branching Used</th>
+            <th>SV Branching Strategy</th>
+            <th>SV Trunc Enabled</th>
+            <th>SV Trunc Used</th>
+            <th>SV Trunc Strategy</th>
+            <th>SV Original Qubits</th>
+            <th>SV Effective Qubits</th>
+            <th>SV Removed Qubits</th>
             <th>Per-Shot (ms)</th>
         </tr>
 """
@@ -168,7 +248,28 @@ def export_to_html(output_path: Optional[Path] = None) -> None:
             <td>{data['parallel_execution_ms']:.4f}</td>
             <td>{data['total_time_ms']:.4f}</td>
             <td>{_fmt_optional_ms(data.get('aer_job_wall_ms'))}</td>
+            <td>{_fmt_optional_ms(data.get('aer_time_taken_execute_ms'))}</td>
+            <td>{_fmt_optional_ms(data.get('aer_fusion_time_taken_ms'))}</td>
+            <td>{_fmt_optional_ms(data.get('sample_measure_time_ms'))}</td>
             <td>{_fmt_optional_ms(data.get('wall_total_time_ms'))}</td>
+            <td>{_fmt_optional_ms(data.get('aer_wall_overhead_ms'))}</td>
+            <td>{_comparison_counterpart_count(data)}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_simd_enabled'))}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_simd_used'))}</td>
+            <td>{data.get('statevector_simd_backend') or ''}</td>
+            <td>{data.get('statevector_simd_min_qubits') or ''}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_2q_kernels_enabled'))}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_2q_kernels_used'))}</td>
+            <td>{data.get('statevector_2q_kernel_gates') or ''}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_shot_branching_enabled'))}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_shot_branching_used'))}</td>
+            <td>{data.get('statevector_shot_branching_strategy') or ''}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_qubit_truncation_enabled'))}</td>
+            <td>{_fmt_optional_bool(data.get('statevector_qubit_truncation_used'))}</td>
+            <td>{data.get('statevector_qubit_truncation_strategy') or ''}</td>
+            <td>{data.get('statevector_original_num_qubits') or ''}</td>
+            <td>{data.get('statevector_effective_num_qubits') or ''}</td>
+            <td>{_fmt_optional_list(data.get('statevector_removed_qubits'))}</td>
             <td>{data['total_time_ms'] / data['num_shots']:.4f}</td>
         </tr>
 """

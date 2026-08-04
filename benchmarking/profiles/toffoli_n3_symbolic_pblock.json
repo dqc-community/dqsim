@@ -2,64 +2,134 @@
   "num_shots": 1000,
   "num_qubits": 3,
   "num_instructions": 20,
-  "preprocessing_ms": 0.103802,
-  "gate_fusion_ms": 0.003479,
-  "parallel_execution_ms": 2.478081,
+  "preprocessing_ms": 0.110652,
+  "gate_fusion_ms": 0.0026019999999999997,
+  "parallel_execution_ms": 3.43208,
   "per_shot_stats": null,
-  "total_time_ms": 2.589973,
+  "total_time_ms": 3.554729,
   "profile_schema": "shots_v1",
   "simulator": "dqsim_pblock_symbolic",
   "circuit_variant": "symbolic",
+  "source_function_breakdown": [
+    {
+      "phase": "preprocessing",
+      "metric": "preprocessing_ms",
+      "time_ms": 0.110652,
+      "dqsim_function": "src/distributed/pblock/simulator.rs::simulate_shots setup",
+      "notes": "Circuit deserialization/setup and conversion into simulator-ready data."
+    },
+    {
+      "phase": "gate_fusion",
+      "metric": "gate_fusion_ms",
+      "time_ms": 0.0026019999999999997,
+      "dqsim_function": "src/types.rs::fuse_circuit or fuse_pblock_entries",
+      "notes": "Local gate fusion before shot execution."
+    },
+    {
+      "phase": "shot_execution",
+      "metric": "parallel_execution_ms",
+      "time_ms": 3.43208,
+      "dqsim_function": "src/distributed/pblock/simulator.rs::simulate_shots",
+      "notes": "Shot loop execution, including gate application and measurement work."
+    },
+    {
+      "phase": "total_profiled_time",
+      "metric": "total_time_ms",
+      "time_ms": 3.554729,
+      "dqsim_function": "src/distributed/pblock/simulator.rs::simulate_shots",
+      "notes": "Profile total emitted by DQSim for simulate_shots."
+    }
+  ],
+  "aer_function_comparison": {
+    "schema": "no_direct_aer_counterpart_v1",
+    "note": "No direct Aer comparison is attached for this profile, usually because it is symbolic-only or unsupported by Aer.",
+    "counterparts": []
+  },
   "circuit": "toffoli_n3",
   "profile_file": "toffoli_n3_symbolic_pblock.json",
-  "run_id": "20260629_023715",
+  "run_id": "20260731_110811",
   "comparison": {
     "previous_profile": {
       "num_shots": 1000,
       "num_qubits": 3,
       "num_instructions": 20,
-      "preprocessing_ms": 0.1072,
-      "gate_fusion_ms": 0.0031,
-      "parallel_execution_ms": 0.3598,
+      "preprocessing_ms": 0.130908,
+      "gate_fusion_ms": 0.003049,
+      "parallel_execution_ms": 1.004775,
       "per_shot_stats": null,
-      "total_time_ms": 0.47209999999999996,
+      "total_time_ms": 1.144267,
       "profile_schema": "shots_v1",
       "simulator": "dqsim_pblock_symbolic",
       "circuit_variant": "symbolic",
+      "source_function_breakdown": [
+        {
+          "phase": "preprocessing",
+          "metric": "preprocessing_ms",
+          "time_ms": 0.130908,
+          "dqsim_function": "src/distributed/pblock/simulator.rs::simulate_shots setup",
+          "notes": "Circuit deserialization/setup and conversion into simulator-ready data."
+        },
+        {
+          "phase": "gate_fusion",
+          "metric": "gate_fusion_ms",
+          "time_ms": 0.003049,
+          "dqsim_function": "src/types.rs::fuse_circuit or fuse_pblock_entries",
+          "notes": "Local gate fusion before shot execution."
+        },
+        {
+          "phase": "shot_execution",
+          "metric": "parallel_execution_ms",
+          "time_ms": 1.004775,
+          "dqsim_function": "src/distributed/pblock/simulator.rs::simulate_shots",
+          "notes": "Shot loop execution, including gate application and measurement work."
+        },
+        {
+          "phase": "total_profiled_time",
+          "metric": "total_time_ms",
+          "time_ms": 1.144267,
+          "dqsim_function": "src/distributed/pblock/simulator.rs::simulate_shots",
+          "notes": "Profile total emitted by DQSim for simulate_shots."
+        }
+      ],
+      "aer_function_comparison": {
+        "schema": "no_direct_aer_counterpart_v1",
+        "note": "No direct Aer comparison is attached for this profile, usually because it is symbolic-only or unsupported by Aer.",
+        "counterparts": []
+      },
       "circuit": "toffoli_n3",
       "profile_file": "toffoli_n3_symbolic_pblock.json",
-      "run_id": "20260629_023002"
+      "run_id": "20260731_100604"
     },
     "metrics": {
       "preprocessing_ms": {
-        "current": 0.103802,
-        "previous": 0.1072,
-        "delta": -0.0033979999999999982,
-        "delta_percent": -3.169776119402983
+        "current": 0.110652,
+        "previous": 0.130908,
+        "delta": -0.020255999999999996,
+        "delta_percent": -15.473462278852322
       },
       "gate_fusion_ms": {
-        "current": 0.003479,
-        "previous": 0.0031,
-        "delta": 0.000379,
-        "delta_percent": 12.225806451612904
+        "current": 0.0026019999999999997,
+        "previous": 0.003049,
+        "delta": -0.00044700000000000035,
+        "delta_percent": -14.660544440800273
       },
       "parallel_execution_ms": {
-        "current": 2.478081,
-        "previous": 0.3598,
-        "delta": 2.118281,
-        "delta_percent": 588.7384658143413
+        "current": 3.43208,
+        "previous": 1.004775,
+        "delta": 2.427305,
+        "delta_percent": 241.5769699684009
       },
       "total_time_ms": {
-        "current": 2.589973,
-        "previous": 0.47209999999999996,
-        "delta": 2.1178730000000003,
-        "delta_percent": 448.60686295276435
+        "current": 3.554729,
+        "previous": 1.144267,
+        "delta": 2.410462,
+        "delta_percent": 210.65555504091267
       },
       "per_shot_ms": {
-        "current": 0.002589973,
-        "previous": 0.0004721,
-        "delta": 0.002117873,
-        "delta_percent": 448.6068629527643
+        "current": 0.003554729,
+        "previous": 0.001144267,
+        "delta": 0.002410462,
+        "delta_percent": 210.65555504091265
       }
     }
   }

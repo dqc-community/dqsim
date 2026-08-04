@@ -243,50 +243,78 @@ fn is_identity_2x2(m: &[[C; 2]; 2]) -> bool {
         && (m[1][1] - C::new(1.0, 0.0)).norm() < 1e-10
 }
 
+#[inline]
+fn identity_2x2() -> [[C; 2]; 2] {
+    [
+        [C::new(1.0, 0.0), C::new(0.0, 0.0)],
+        [C::new(0.0, 0.0), C::new(1.0, 0.0)],
+    ]
+}
+
+type Pending1Q = Vec<Option<[[C; 2]; 2]>>;
+
+#[inline]
+fn ensure_pending_qubit(pending: &mut Pending1Q, qubit: usize) {
+    if qubit >= pending.len() {
+        pending.resize(qubit + 1, None);
+    }
+}
+
+#[inline]
+fn take_pending_qubit(pending: &mut Pending1Q, qubit: usize) -> Option<[[C; 2]; 2]> {
+    pending.get_mut(qubit).and_then(Option::take)
+}
+
+#[inline]
+fn flush_fused_instruction<'a>(
+    qubit: usize,
+    pending: &mut Pending1Q,
+    out: &mut Vec<FusedInstruction<'a>>,
+) {
+    if let Some(matrix) = take_pending_qubit(pending, qubit) {
+        if !is_identity_2x2(&matrix) {
+            out.push(FusedInstruction::Fused1Q { qubit, matrix });
+        }
+    }
+}
+
+#[inline]
+fn flush_fused_pblock_entry(
+    qubit: usize,
+    pending: &mut Pending1Q,
+    out: &mut Vec<FusedPBlockEntry>,
+) {
+    if let Some(matrix) = take_pending_qubit(pending, qubit) {
+        if !is_identity_2x2(&matrix) {
+            out.push(FusedPBlockEntry::Fused1Q { qubit, matrix });
+        }
+    }
+}
+
 /// Fuse consecutive single-qubit gates on the same qubit into a single matrix.
 /// Returns a Vec of FusedInstruction that covers the same logical circuit.
 pub fn fuse_circuit<'a>(instructions: &'a [Instruction]) -> Vec<FusedInstruction<'a>> {
-    // pending[qubit] = (accumulated_matrix, first_original_index_unused)
-    let mut pending: HashMap<usize, [[C; 2]; 2]> = HashMap::new();
+    let mut pending: Pending1Q = Vec::new();
     let mut out: Vec<FusedInstruction<'a>> = Vec::with_capacity(instructions.len());
-
-    let identity: [[C; 2]; 2] = [
-        [C::new(1.0, 0.0), C::new(0.0, 0.0)],
-        [C::new(0.0, 0.0), C::new(1.0, 0.0)],
-    ];
-
-    // Flush accumulated matrix for a qubit into `out`.
-    let flush_qubit = |q: usize,
-                       pending: &mut HashMap<usize, [[C; 2]; 2]>,
-                       out: &mut Vec<FusedInstruction<'a>>| {
-        if let Some(m) = pending.remove(&q) {
-            if !is_identity_2x2(&m) {
-                out.push(FusedInstruction::Fused1Q { qubit: q, matrix: m });
-            }
-        }
-    };
 
     for inst in instructions {
         if let Some((qubit, mat)) = gate_matrix_1q(inst) {
             // Accumulate: new_mat = mat * pending  (mat applied after pending)
-            let acc = pending.entry(qubit).or_insert(identity);
+            ensure_pending_qubit(&mut pending, qubit);
+            let acc = pending[qubit].get_or_insert_with(identity_2x2);
             *acc = matmul2x2(mat, *acc);
         } else {
             // Non-fuseable instruction: flush all qubits it touches, then emit it.
-            let touched = inst.qubits();
-            for q in &touched {
-                flush_qubit(*q, &mut pending, &mut out);
-            }
+            inst.for_each_qubit(|q| flush_fused_instruction(q, &mut pending, &mut out));
             // Special case: Conditional / Reset also touch their inner qubit already
-            // via inst.qubits(), so no extra handling needed.
+            // via inst.for_each_qubit(), so no extra handling needed.
             out.push(FusedInstruction::Original(inst));
         }
     }
 
     // Flush any remaining pending gates.
-    let remaining_qubits: Vec<usize> = pending.keys().copied().collect();
-    for q in remaining_qubits {
-        flush_qubit(q, &mut pending, &mut out);
+    for q in 0..pending.len() {
+        flush_fused_instruction(q, &mut pending, &mut out);
     }
 
     out
@@ -307,45 +335,36 @@ pub fn fuse_pblock_entries(
     entries: &[(i64, usize, usize)],
     node_circuits: &HashMap<usize, Circuit>,
 ) -> Vec<FusedPBlockEntry> {
-    let mut pending: HashMap<usize, [[C; 2]; 2]> = HashMap::new();
+    let mut pending: Pending1Q = Vec::new();
     let mut out: Vec<FusedPBlockEntry> = Vec::with_capacity(entries.len());
-
-    let identity: [[C; 2]; 2] = [
-        [C::new(1.0, 0.0), C::new(0.0, 0.0)],
-        [C::new(0.0, 0.0), C::new(1.0, 0.0)],
-    ];
-
-    let flush_qubit = |q: usize, pending: &mut HashMap<usize, [[C; 2]; 2]>, out: &mut Vec<FusedPBlockEntry>| {
-        if let Some(m) = pending.remove(&q) {
-            if !is_identity_2x2(&m) {
-                out.push(FusedPBlockEntry::Fused1Q { qubit: q, matrix: m });
-            }
-        }
-    };
 
     for &(_, node, local_idx) in entries {
         let inst = &node_circuits[&node].instructions[local_idx];
         if let Some((qubit, mat)) = gate_matrix_1q(inst) {
-            let acc = pending.entry(qubit).or_insert(identity);
+            ensure_pending_qubit(&mut pending, qubit);
+            let acc = pending[qubit].get_or_insert_with(identity_2x2);
             *acc = matmul2x2(mat, *acc);
         } else {
-            let touched = inst.qubits();
-            for q in &touched {
-                flush_qubit(*q, &mut pending, &mut out);
-            }
+            inst.for_each_qubit(|q| flush_fused_pblock_entry(q, &mut pending, &mut out));
             out.push(FusedPBlockEntry::Original { node, local_idx });
         }
     }
 
-    let remaining: Vec<usize> = pending.keys().copied().collect();
-    for q in remaining {
-        flush_qubit(q, &mut pending, &mut out);
+    for q in 0..pending.len() {
+        flush_fused_pblock_entry(q, &mut pending, &mut out);
     }
     out
 }
 
 impl Instruction {
-    pub fn qubits(&self) -> Vec<usize> {
+    pub fn for_each_qubit<F>(&self, mut f: F)
+    where
+        F: FnMut(usize),
+    {
+        self.visit_qubits(&mut f);
+    }
+
+    fn visit_qubits(&self, f: &mut dyn FnMut(usize)) {
         match self {
             Instruction::X { qubit }
             | Instruction::Y { qubit }
@@ -359,7 +378,7 @@ impl Instruction {
             | Instruction::Sxdg { qubit }
             | Instruction::U0 { qubit }
             | Instruction::Id { qubit }
-            | Instruction::Reset { qubit } => vec![*qubit],
+            | Instruction::Reset { qubit } => f(*qubit),
 
             Instruction::U3 { qubit, .. }
             | Instruction::U2 { qubit, .. }
@@ -368,9 +387,9 @@ impl Instruction {
             | Instruction::P { qubit, .. }
             | Instruction::Rx { qubit, .. }
             | Instruction::Ry { qubit, .. }
-            | Instruction::Rz { qubit, .. } => vec![*qubit],
+            | Instruction::Rz { qubit, .. } => f(*qubit),
 
-            Instruction::Measure { qubit, .. } => vec![*qubit],
+            Instruction::Measure { qubit, .. } => f(*qubit),
 
             Instruction::Cx { control, target }
             | Instruction::Cz { control, target }
@@ -383,36 +402,124 @@ impl Instruction {
             | Instruction::Cu1 { control, target, .. }
             | Instruction::Cp { control, target, .. }
             | Instruction::Cu3 { control, target, .. }
-            | Instruction::Cu { control, target, .. } => vec![*control, *target],
+            | Instruction::Cu { control, target, .. } => {
+                f(*control);
+                f(*target);
+            }
 
             Instruction::Swap { a, b }
             | Instruction::Rxx { a, b, .. }
-            | Instruction::Rzz { a, b, .. } => vec![*a, *b],
+            | Instruction::Rzz { a, b, .. } => {
+                f(*a);
+                f(*b);
+            }
 
             Instruction::Ccx { control1, control2, target }
             | Instruction::Rccx { control1, control2, target } => {
-                vec![*control1, *control2, *target]
+                f(*control1);
+                f(*control2);
+                f(*target);
             }
 
             Instruction::Cswap { control, target1, target2 } => {
-                vec![*control, *target1, *target2]
+                f(*control);
+                f(*target1);
+                f(*target2);
             }
 
             Instruction::Rc3x { control1, control2, control3, target }
             | Instruction::C3x { control1, control2, control3, target }
             | Instruction::C3sqrtx { control1, control2, control3, target } => {
-                vec![*control1, *control2, *control3, *target]
+                f(*control1);
+                f(*control2);
+                f(*control3);
+                f(*target);
             }
 
             Instruction::C4x { control1, control2, control3, control4, target } => {
-                vec![*control1, *control2, *control3, *control4, *target]
+                f(*control1);
+                f(*control2);
+                f(*control3);
+                f(*control4);
+                f(*target);
             }
 
-            Instruction::Gate { qubits, .. } => qubits.clone(),
+            Instruction::Gate { qubits, .. } => {
+                for &qubit in qubits {
+                    f(qubit);
+                }
+            }
 
-            Instruction::Conditional { op, .. } => op.qubits(),
+            Instruction::Conditional { op, .. } => op.visit_qubits(f),
 
-            Instruction::Barrier | Instruction::Classical { .. } => vec![],
+            Instruction::Barrier | Instruction::Classical { .. } => {}
         }
+    }
+
+    pub fn qubits(&self) -> Vec<usize> {
+        let mut qubits = Vec::new();
+        self.for_each_qubit(|qubit| qubits.push(qubit));
+        qubits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_matrix_close(actual: &[[C; 2]; 2], expected: &[[C; 2]; 2]) {
+        for row in 0..2 {
+            for col in 0..2 {
+                assert!(
+                    (actual[row][col] - expected[row][col]).norm() < 1e-10,
+                    "matrix mismatch at [{row}][{col}]: {:?} != {:?}",
+                    actual[row][col],
+                    expected[row][col]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fuse_circuit_elides_identity_single_qubit_run() {
+        let instructions = vec![Instruction::X { qubit: 0 }, Instruction::X { qubit: 0 }];
+
+        let fused = fuse_circuit(&instructions);
+
+        assert_eq!(fused.len(), 0);
+    }
+
+    #[test]
+    fn fuse_circuit_flushes_before_touching_gate() {
+        let instructions = vec![
+            Instruction::H { qubit: 0 },
+            Instruction::X { qubit: 0 },
+            Instruction::Cx {
+                control: 0,
+                target: 1,
+            },
+            Instruction::Z { qubit: 1 },
+        ];
+
+        let fused = fuse_circuit(&instructions);
+
+        assert_eq!(fused.len(), 3);
+        match &fused[0] {
+            FusedInstruction::Fused1Q { qubit, matrix } => {
+                assert_eq!(*qubit, 0);
+                let (_, h) = gate_matrix_1q(&instructions[0]).unwrap();
+                let (_, x) = gate_matrix_1q(&instructions[1]).unwrap();
+                assert_matrix_close(matrix, &matmul2x2(x, h));
+            }
+            _ => panic!("expected fused 1Q instruction before CX"),
+        }
+        assert!(matches!(
+            fused[1],
+            FusedInstruction::Original(Instruction::Cx { .. })
+        ));
+        assert!(matches!(
+            fused[2],
+            FusedInstruction::Fused1Q { qubit: 1, .. }
+        ));
     }
 }

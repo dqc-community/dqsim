@@ -1,0 +1,302 @@
+{
+  "num_shots": 3,
+  "num_qubits": 14,
+  "num_instructions": 55,
+  "preprocessing_ms": 0.11331400000000001,
+  "gate_fusion_ms": 0.0038439999999999998,
+  "parallel_execution_ms": 1.377611,
+  "per_shot_stats": null,
+  "statevector_simd_enabled": false,
+  "statevector_simd_used": false,
+  "statevector_simd_min_qubits": 12,
+  "statevector_2q_kernels_enabled": true,
+  "statevector_2q_kernels_used": true,
+  "statevector_2q_kernel_gates": "cx,cz,cy,ch,swap,csx,crx,cry,crz,cu1,cp,cu3,cu,ccx,cswap,c3x,c3sqrtx,c4x",
+  "statevector_shot_branching_enabled": false,
+  "statevector_shot_branching_used": false,
+  "statevector_qubit_truncation_enabled": false,
+  "statevector_qubit_truncation_used": false,
+  "statevector_original_num_qubits": 14,
+  "statevector_effective_num_qubits": 14,
+  "total_time_ms": 1.550226,
+  "profile_schema": "shots_v1",
+  "simulator": "dqsim_statevector",
+  "circuit_variant": "original",
+  "source_function_breakdown": [
+    {
+      "phase": "preprocessing",
+      "metric": "preprocessing_ms",
+      "time_ms": 0.11331400000000001,
+      "dqsim_function": "src/monolithic/statevector/simulator.rs::simulate_shots setup",
+      "notes": "Circuit deserialization/setup and conversion into simulator-ready data."
+    },
+    {
+      "phase": "gate_fusion",
+      "metric": "gate_fusion_ms",
+      "time_ms": 0.0038439999999999998,
+      "dqsim_function": "src/types.rs::fuse_circuit or fuse_pblock_entries",
+      "notes": "Local gate fusion before shot execution."
+    },
+    {
+      "phase": "shot_execution",
+      "metric": "parallel_execution_ms",
+      "time_ms": 1.377611,
+      "dqsim_function": "src/monolithic/statevector/simulator.rs::simulate_shots",
+      "notes": "Shot loop execution, including gate application and measurement work."
+    },
+    {
+      "phase": "total_profiled_time",
+      "metric": "total_time_ms",
+      "time_ms": 1.550226,
+      "dqsim_function": "src/monolithic/statevector/simulator.rs::simulate_shots",
+      "notes": "Profile total emitted by DQSim for simulate_shots."
+    }
+  ],
+  "aer_function_comparison": {
+    "schema": "dqsim_to_aer_source_mapped_phase_comparison_v1",
+    "note": "Stock Qiskit Aer does not expose per-gate C++ function timings through the Python Result API. These entries compare the nearest measured phases and annotate the Aer source function that emits or contains each timing. Exact function-level timings require external profiling or an instrumented Aer build.",
+    "counterparts": [
+      {
+        "schema": "source_mapped_phase_comparison_v1",
+        "note": "Stock Qiskit Aer does not expose per-gate C++ function timings through the Python Result API. These entries compare the nearest measured phases and annotate the Aer source function that emits or contains each timing. Exact function-level timings require external profiling or an instrumented Aer build.",
+        "aer_simulator": "qiskit_aer_statevector",
+        "aer_backend_method": "statevector",
+        "aer_timing_basis": "aer_experiment_time_taken",
+        "phases": [
+          {
+            "phase": "preprocessing_or_conversion",
+            "dqsim_metric": "preprocessing_ms",
+            "dqsim_ms": 0.11331400000000001,
+            "aer_metric": "preprocessing_ms",
+            "aer_ms": 0.5899739917367697,
+            "delta_vs_aer_ms": -0.47665999173676965,
+            "dqsim_to_aer_ratio": 0.19206609373817554,
+            "aer_function": "BenchmarkRunner._prepare_qiskit_circuit",
+            "aer_source": "benchmarking/benchmarking_suite.py::_prepare_qiskit_circuit",
+            "notes": "Both are local benchmark-side setup costs, not Aer C++ kernel time."
+          },
+          {
+            "phase": "fusion_or_compilation",
+            "dqsim_metric": "gate_fusion_ms",
+            "dqsim_ms": 0.0038439999999999998,
+            "aer_metric": "aer_fusion_time_taken_ms",
+            "aer_ms": null,
+            "delta_vs_aer_ms": null,
+            "dqsim_to_aer_ratio": null,
+            "aer_function": "Fusion::optimize_circuit",
+            "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/transpile/fusion.hpp#L942-L945",
+            "notes": "DQSim gate fusion is explicit; Aer fusion is available only if Aer emits fusion metadata."
+          },
+          {
+            "phase": "shot_or_experiment_execution",
+            "dqsim_metric": "parallel_execution_ms",
+            "dqsim_ms": 1.377611,
+            "aer_metric": "aer_experiment_time_taken_ms",
+            "aer_ms": 1.2406570000000001,
+            "delta_vs_aer_ms": 0.1369539999999998,
+            "dqsim_to_aer_ratio": 1.1103882862064212,
+            "aer_function": "CircuitExecutor experiment execution / State::apply_ops",
+            "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L714-L722",
+            "notes": "Closest fair timing comparison: DQSim shot loop versus Aer experiment timer."
+          },
+          {
+            "phase": "sample_measure",
+            "dqsim_metric": null,
+            "dqsim_ms": null,
+            "aer_metric": "sample_measure_time_ms",
+            "aer_ms": 0.083088,
+            "delta_vs_aer_ms": null,
+            "dqsim_to_aer_ratio": null,
+            "aer_function": "CircuitExecutor::sample_measure",
+            "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L1064-L1070",
+            "notes": "Aer-specific sampling fast path; DQSim measurement work is included in its shot loop."
+          },
+          {
+            "phase": "python_job_overhead",
+            "dqsim_metric": null,
+            "dqsim_ms": null,
+            "aer_metric": "aer_wall_overhead_ms",
+            "aer_ms": 1.6009889972504525,
+            "delta_vs_aer_ms": null,
+            "dqsim_to_aer_ratio": null,
+            "aer_function": "AerBackend._execute_circuits_job and result formatting wrapper",
+            "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/qiskit_aer/backends/aerbackend.py#L443-L496",
+            "notes": "Shown for diagnosing overhead; it is not part of the reported Aer benchmark total."
+          }
+        ],
+        "aer_profile_key": "original_aer_statevector"
+      }
+    ]
+  },
+  "circuit": "bv_n14",
+  "profile_file": "bv_n14_original_sv.json",
+  "run_id": "20260731_110822",
+  "comparison": {
+    "previous_profile": {
+      "num_shots": 3,
+      "num_qubits": 14,
+      "num_instructions": 55,
+      "preprocessing_ms": 0.12233799999999999,
+      "gate_fusion_ms": 0.003726,
+      "parallel_execution_ms": 1.040819,
+      "per_shot_stats": null,
+      "statevector_simd_enabled": false,
+      "statevector_simd_used": false,
+      "statevector_simd_min_qubits": 12,
+      "statevector_2q_kernels_enabled": true,
+      "statevector_2q_kernels_used": true,
+      "statevector_2q_kernel_gates": "cx,cz,cy,ch,swap,csx,crx,cry,crz,cu1,cp,cu3,cu,ccx,cswap,c3x,c3sqrtx,c4x",
+      "statevector_shot_branching_enabled": false,
+      "statevector_shot_branching_used": false,
+      "statevector_qubit_truncation_enabled": false,
+      "statevector_qubit_truncation_used": false,
+      "statevector_original_num_qubits": 14,
+      "statevector_effective_num_qubits": 14,
+      "total_time_ms": 1.2243149999999998,
+      "profile_schema": "shots_v1",
+      "simulator": "dqsim_statevector",
+      "circuit_variant": "original",
+      "source_function_breakdown": [
+        {
+          "phase": "preprocessing",
+          "metric": "preprocessing_ms",
+          "time_ms": 0.12233799999999999,
+          "dqsim_function": "src/monolithic/statevector/simulator.rs::simulate_shots setup",
+          "notes": "Circuit deserialization/setup and conversion into simulator-ready data."
+        },
+        {
+          "phase": "gate_fusion",
+          "metric": "gate_fusion_ms",
+          "time_ms": 0.003726,
+          "dqsim_function": "src/types.rs::fuse_circuit or fuse_pblock_entries",
+          "notes": "Local gate fusion before shot execution."
+        },
+        {
+          "phase": "shot_execution",
+          "metric": "parallel_execution_ms",
+          "time_ms": 1.040819,
+          "dqsim_function": "src/monolithic/statevector/simulator.rs::simulate_shots",
+          "notes": "Shot loop execution, including gate application and measurement work."
+        },
+        {
+          "phase": "total_profiled_time",
+          "metric": "total_time_ms",
+          "time_ms": 1.2243149999999998,
+          "dqsim_function": "src/monolithic/statevector/simulator.rs::simulate_shots",
+          "notes": "Profile total emitted by DQSim for simulate_shots."
+        }
+      ],
+      "aer_function_comparison": {
+        "schema": "dqsim_to_aer_source_mapped_phase_comparison_v1",
+        "note": "Stock Qiskit Aer does not expose per-gate C++ function timings through the Python Result API. These entries compare the nearest measured phases and annotate the Aer source function that emits or contains each timing. Exact function-level timings require external profiling or an instrumented Aer build.",
+        "counterparts": [
+          {
+            "schema": "source_mapped_phase_comparison_v1",
+            "note": "Stock Qiskit Aer does not expose per-gate C++ function timings through the Python Result API. These entries compare the nearest measured phases and annotate the Aer source function that emits or contains each timing. Exact function-level timings require external profiling or an instrumented Aer build.",
+            "aer_simulator": "qiskit_aer_statevector",
+            "aer_backend_method": "statevector",
+            "aer_timing_basis": "aer_experiment_time_taken",
+            "phases": [
+              {
+                "phase": "preprocessing_or_conversion",
+                "dqsim_metric": "preprocessing_ms",
+                "dqsim_ms": 0.12233799999999999,
+                "aer_metric": "preprocessing_ms",
+                "aer_ms": 0.8278510067611933,
+                "delta_vs_aer_ms": -0.7055130067611933,
+                "dqsim_to_aer_ratio": 0.1477777993876262,
+                "aer_function": "BenchmarkRunner._prepare_qiskit_circuit",
+                "aer_source": "benchmarking/benchmarking_suite.py::_prepare_qiskit_circuit",
+                "notes": "Both are local benchmark-side setup costs, not Aer C++ kernel time."
+              },
+              {
+                "phase": "fusion_or_compilation",
+                "dqsim_metric": "gate_fusion_ms",
+                "dqsim_ms": 0.003726,
+                "aer_metric": "aer_fusion_time_taken_ms",
+                "aer_ms": null,
+                "delta_vs_aer_ms": null,
+                "dqsim_to_aer_ratio": null,
+                "aer_function": "Fusion::optimize_circuit",
+                "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/transpile/fusion.hpp#L942-L945",
+                "notes": "DQSim gate fusion is explicit; Aer fusion is available only if Aer emits fusion metadata."
+              },
+              {
+                "phase": "shot_or_experiment_execution",
+                "dqsim_metric": "parallel_execution_ms",
+                "dqsim_ms": 1.040819,
+                "aer_metric": "aer_experiment_time_taken_ms",
+                "aer_ms": 1.513429,
+                "delta_vs_aer_ms": -0.47261,
+                "dqsim_to_aer_ratio": 0.6877223840695533,
+                "aer_function": "CircuitExecutor experiment execution / State::apply_ops",
+                "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L714-L722",
+                "notes": "Closest fair timing comparison: DQSim shot loop versus Aer experiment timer."
+              },
+              {
+                "phase": "sample_measure",
+                "dqsim_metric": null,
+                "dqsim_ms": null,
+                "aer_metric": "sample_measure_time_ms",
+                "aer_ms": 0.063968,
+                "delta_vs_aer_ms": null,
+                "dqsim_to_aer_ratio": null,
+                "aer_function": "CircuitExecutor::sample_measure",
+                "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L1064-L1070",
+                "notes": "Aer-specific sampling fast path; DQSim measurement work is included in its shot loop."
+              },
+              {
+                "phase": "python_job_overhead",
+                "dqsim_metric": null,
+                "dqsim_ms": null,
+                "aer_metric": "aer_wall_overhead_ms",
+                "aer_ms": 2.076870020288512,
+                "delta_vs_aer_ms": null,
+                "dqsim_to_aer_ratio": null,
+                "aer_function": "AerBackend._execute_circuits_job and result formatting wrapper",
+                "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/qiskit_aer/backends/aerbackend.py#L443-L496",
+                "notes": "Shown for diagnosing overhead; it is not part of the reported Aer benchmark total."
+              }
+            ],
+            "aer_profile_key": "original_aer_statevector"
+          }
+        ]
+      },
+      "circuit": "bv_n14",
+      "profile_file": "bv_n14_original_sv.json",
+      "run_id": "20260731_100633"
+    },
+    "metrics": {
+      "preprocessing_ms": {
+        "current": 0.11331400000000001,
+        "previous": 0.12233799999999999,
+        "delta": -0.009023999999999976,
+        "delta_percent": -7.376285373309991
+      },
+      "gate_fusion_ms": {
+        "current": 0.0038439999999999998,
+        "previous": 0.003726,
+        "delta": 0.00011799999999999962,
+        "delta_percent": 3.1669350509930116
+      },
+      "parallel_execution_ms": {
+        "current": 1.377611,
+        "previous": 1.040819,
+        "delta": 0.336792,
+        "delta_percent": 32.35836394224164
+      },
+      "total_time_ms": {
+        "current": 1.550226,
+        "previous": 1.2243149999999998,
+        "delta": 0.3259110000000003,
+        "delta_percent": 26.61986498572674
+      },
+      "per_shot_ms": {
+        "current": 0.516742,
+        "previous": 0.40810499999999994,
+        "delta": 0.1086370000000001,
+        "delta_percent": 26.61986498572674
+      }
+    }
+  }
+}

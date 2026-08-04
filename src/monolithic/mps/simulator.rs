@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use nalgebra::DMatrix;
@@ -343,22 +344,45 @@ impl MpsSimulator {
 
         let shot_loop_profiler =
             ShotLoopProfiler::start("mps", num_qubits, shots, num_instructions);
+        let shot_branching_enabled = mps_shot_branching_enabled();
+        let shot_branching_plan = if shot_branching_enabled {
+            mps_terminal_measurement_plan(&rust_circuit.instructions)
+        } else {
+            None
+        };
+        let shot_branching_used = shot_branching_plan.is_some();
+        let shot_branching_strategy =
+            shot_branching_used.then_some("terminal_measurement_full_state_batch".to_string());
+        let max_bond_dimension = self.max_bond_dimension;
+        let truncation_threshold = self.truncation_threshold;
+
         let exec_t0 = Instant::now();
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        for shot in 0..shots {
-            let mut mps = Mps::new(
-                num_qubits,
-                self.max_bond_dimension,
-                self.truncation_threshold,
-            );
-            let mut cbits: HashMap<usize, i32> = HashMap::new();
-            let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(shot as u64));
-            for inst in &rust_circuit.instructions {
-                run_instruction(&mut mps, inst, &mut cbits, &mut rng)?;
-            }
-            let key = format_cbits(&cbits, num_cbits);
-            *counts.entry(key).or_insert(0) += 1;
-        }
+        let counts = py
+            .allow_threads(|| -> Result<HashMap<String, usize>, String> {
+                if let Some(plan) = &shot_branching_plan {
+                    run_terminal_measurement_branching(
+                        &rust_circuit,
+                        plan,
+                        num_qubits,
+                        num_cbits,
+                        shots,
+                        base_seed,
+                        max_bond_dimension,
+                        truncation_threshold,
+                    )
+                } else {
+                    run_independent_shots(
+                        &rust_circuit,
+                        num_qubits,
+                        num_cbits,
+                        shots,
+                        base_seed,
+                        max_bond_dimension,
+                        truncation_threshold,
+                    )
+                }
+            })
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
         let parallel_execution_ms = exec_t0.elapsed().as_secs_f64() * 1000.0;
         if let Some(profiler) = shot_loop_profiler {
             profiler.finish();
@@ -378,6 +402,25 @@ impl MpsSimulator {
                 gate_fusion_ms: 0.0,
                 parallel_execution_ms,
                 per_shot_stats: None,
+                statevector_simd_enabled: None,
+                statevector_simd_backend: None,
+                statevector_simd_used: None,
+                statevector_simd_min_qubits: None,
+                statevector_two_qubit_kernels_enabled: None,
+                statevector_two_qubit_kernels_used: None,
+                statevector_two_qubit_kernel_gates: None,
+                statevector_shot_branching_enabled: None,
+                statevector_shot_branching_used: None,
+                statevector_shot_branching_strategy: None,
+                mps_shot_branching_enabled: Some(shot_branching_enabled),
+                mps_shot_branching_used: Some(shot_branching_used),
+                mps_shot_branching_strategy: shot_branching_strategy,
+                statevector_qubit_truncation_enabled: None,
+                statevector_qubit_truncation_used: None,
+                statevector_qubit_truncation_strategy: None,
+                statevector_original_num_qubits: None,
+                statevector_effective_num_qubits: None,
+                statevector_removed_qubits: None,
                 total_time_ms: total_t0.elapsed().as_secs_f64() * 1000.0,
             };
 
@@ -399,6 +442,169 @@ impl MpsSimulator {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TerminalMeasurement {
+    qubit: usize,
+    cbit: usize,
+}
+
+struct TerminalMeasurementPlan {
+    measurements: Vec<TerminalMeasurement>,
+}
+
+fn mps_shot_branching_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let Ok(value) = std::env::var("DQSIM_MPS_SHOT_BRANCHING") else {
+            return false;
+        };
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "terminal" | "terminal_measurement"
+        )
+    })
+}
+
+fn mps_terminal_measurement_plan(instructions: &[Instruction]) -> Option<TerminalMeasurementPlan> {
+    let mut measurements = Vec::new();
+    let mut seen_cbits = Vec::new();
+    let mut saw_terminal_measurement = false;
+
+    for inst in instructions {
+        match inst {
+            Instruction::Measure { qubit, cbit } => {
+                saw_terminal_measurement = true;
+                if seen_cbits.contains(cbit) {
+                    return None;
+                }
+                seen_cbits.push(*cbit);
+                measurements.push(TerminalMeasurement {
+                    qubit: *qubit,
+                    cbit: *cbit,
+                });
+            }
+            Instruction::Barrier | Instruction::Classical { .. } => {}
+            Instruction::Reset { .. } | Instruction::Conditional { .. } => return None,
+            _ if saw_terminal_measurement => return None,
+            _ => {}
+        }
+    }
+
+    if measurements.is_empty() {
+        return None;
+    }
+
+    Some(TerminalMeasurementPlan { measurements })
+}
+
+fn run_independent_shots(
+    circuit: &Circuit,
+    num_qubits: usize,
+    num_cbits: usize,
+    shots: usize,
+    base_seed: u64,
+    max_bond_dimension: Option<usize>,
+    truncation_threshold: f64,
+) -> Result<HashMap<String, usize>, String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for shot in 0..shots {
+        let mut mps = Mps::new(num_qubits, max_bond_dimension, truncation_threshold);
+        let mut cbits: HashMap<usize, i32> = HashMap::new();
+        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(shot as u64));
+        for inst in &circuit.instructions {
+            run_instruction(&mut mps, inst, &mut cbits, &mut rng).map_err(|err| err.to_string())?;
+        }
+        let key = format_cbits(&cbits, num_cbits);
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+fn run_terminal_measurement_branching(
+    circuit: &Circuit,
+    plan: &TerminalMeasurementPlan,
+    num_qubits: usize,
+    num_cbits: usize,
+    shots: usize,
+    base_seed: u64,
+    max_bond_dimension: Option<usize>,
+    truncation_threshold: f64,
+) -> Result<HashMap<String, usize>, String> {
+    let mut mps = Mps::new(num_qubits, max_bond_dimension, truncation_threshold);
+    let mut cbits: HashMap<usize, i32> = HashMap::new();
+    let mut rng = ChaCha8Rng::seed_from_u64(base_seed);
+
+    for inst in &circuit.instructions {
+        if matches!(inst, Instruction::Measure { .. }) {
+            continue;
+        }
+        run_instruction(&mut mps, inst, &mut cbits, &mut rng).map_err(|err| err.to_string())?;
+    }
+
+    let state = mps.to_statevector();
+    Ok(sample_terminal_sequential_full_state(
+        &state, num_cbits, plan, shots, base_seed,
+    ))
+}
+
+fn sample_terminal_sequential_full_state(
+    state: &[C],
+    num_cbits: usize,
+    plan: &TerminalMeasurementPlan,
+    shots: usize,
+    base_seed: u64,
+) -> HashMap<String, usize> {
+    let probabilities: Vec<f64> = state.iter().map(|amp| amp.norm_sqr()).collect();
+    let mut counts = HashMap::new();
+
+    for shot in 0..shots {
+        let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(shot as u64));
+        let mut fixed_mask = 0usize;
+        let mut fixed_value = 0usize;
+        let mut bits = vec![b'0'; num_cbits];
+
+        for measurement in &plan.measurements {
+            let qubit_mask = 1usize << measurement.qubit;
+            let mut p0 = 0.0;
+            let mut p1 = 0.0;
+
+            for (basis, probability) in probabilities.iter().enumerate() {
+                if (basis & fixed_mask) != fixed_value {
+                    continue;
+                }
+                if (basis & qubit_mask) == 0 {
+                    p0 += *probability;
+                } else {
+                    p1 += *probability;
+                }
+            }
+
+            let total = p0 + p1;
+            let p1 = if total > 0.0 {
+                (p1 / total).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let outcome = usize::from(rng.gen::<f64>() < p1);
+
+            fixed_mask |= qubit_mask;
+            if outcome == 1 {
+                fixed_value |= qubit_mask;
+            } else {
+                fixed_value &= !qubit_mask;
+            }
+
+            if measurement.cbit < num_cbits {
+                bits[num_cbits - 1 - measurement.cbit] = if outcome == 1 { b'1' } else { b'0' };
+            }
+        }
+
+        let key = String::from_utf8(bits).expect("terminal measurement keys are ASCII bits");
+        *counts.entry(key).or_insert(0) += 1;
+    }
+
+    counts
+}
 fn run_instruction(
     mps: &mut Mps,
     inst: &Instruction,

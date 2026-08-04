@@ -37,7 +37,7 @@ endif
 
 test: prepare-windows-scratch
 	uv run --python $(PYTHON) --extra test --with maturin maturin develop --skip-install
-	uv run --python $(PYTHON) --extra test python -m pytest tests/ -v -s
+	uv run --python $(PYTHON) --extra test -m pytest tests/ -v -s
 
 lint:
 	cargo clippy --all-targets
@@ -48,14 +48,15 @@ check:
 suite:
 	$(MAKE) test && $(MAKE) lint && $(MAKE) check
 
+perf: export DQSIM_STATEVECTOR_2Q_KERNELS ?= 1
 perf: prepare-windows-scratch
 	uv run --python $(PYTHON) --extra test --with maturin maturin develop --skip-install --release
-	uv run --python $(PYTHON) --extra test python -m pytest benchmarking/benchmarking_suite.py -v -s
+	uv run --python $(PYTHON) --extra test -m pytest benchmarking/benchmarking_suite.py -v -s
 
 perf-flamegraph: prepare-windows-scratch
 	rm -rf target/flamegraphs
 	CARGO_PROFILE_RELEASE_DEBUG=true uv run --python $(PYTHON) --extra test --with maturin maturin develop --skip-install --release
-	DQSIM_FLAMEGRAPH_DIR=target/flamegraphs uv run --python $(PYTHON) --extra test python -m pytest benchmarking/benchmarking_suite.py -v -s
+	DQSIM_FLAMEGRAPH_DIR=target/flamegraphs uv run --python $(PYTHON) --extra test -m pytest benchmarking/benchmarking_suite.py -v -s
 
 perf-profile: perf-flamegraph
 

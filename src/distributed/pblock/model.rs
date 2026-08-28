@@ -79,13 +79,17 @@ impl BlockPool {
             blocks.push(Some(Block::new(qubits)));
         }
 
-        BlockPool { blocks, qubit_to_block }
+        BlockPool {
+            blocks,
+            qubit_to_block,
+        }
     }
 
     fn block_of(&self, phys: usize) -> usize {
-        *self.qubit_to_block.get(&phys).unwrap_or_else(|| {
-            panic!("qubit {} is not assigned to any block", phys)
-        })
+        *self
+            .qubit_to_block
+            .get(&phys)
+            .unwrap_or_else(|| panic!("qubit {} is not assigned to any block", phys))
     }
 
     fn merge(&mut self, keep_idx: usize, drop_idx: usize) {
@@ -136,6 +140,7 @@ pub(super) fn m8(m: [[C; 8]; 8]) -> Vec<Vec<C>> {
 pub(super) fn m16(m: [[C; 16]; 16]) -> Vec<Vec<C>> {
     m.iter().map(|row| row.to_vec()).collect()
 }
+
 pub(super) fn m32(m: [[C; 32]; 32]) -> Vec<Vec<C>> {
     m.iter().map(|row| row.to_vec()).collect()
 }

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use numpy::{IntoPyArray, PyArray1};
@@ -9,8 +10,11 @@ use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 
 use crate::engine::{
-    apply_n_qubit, apply_n_qubit_seq, apply_one_qubit, apply_one_qubit_seq, marginal_probs,
-    measure_qubit, measure_qubit_seq,
+    apply_cswap_kernel, apply_cswap_kernel_seq, apply_cx_kernel, apply_cx_kernel_seq,
+    apply_cz_kernel, apply_cz_kernel_seq, apply_multi_controlled_x_kernel,
+    apply_multi_controlled_x_kernel_seq, apply_n_qubit, apply_n_qubit_seq, apply_one_qubit,
+    apply_one_qubit_seq, apply_swap_kernel, apply_swap_kernel_seq, marginal_probs, measure_qubit,
+    measure_qubit_seq,
 };
 use crate::gates;
 use crate::profiling::{ShotLoopProfiler, ShotsProfile};
@@ -279,6 +283,28 @@ impl PBlockSimulator {
                 mps_shot_branching_enabled: None,
                 mps_shot_branching_used: None,
                 mps_shot_branching_strategy: None,
+                mps_lazy_qubit_ordering_enabled: None,
+                mps_routing_mode: None,
+                mps_logical_2q_gates: None,
+                mps_routing_swaps: None,
+                mps_adjacent_2q_applications: None,
+                mps_svd_count: None,
+                mps_svd_time_ms: None,
+                mps_2q_fast_kernels_enabled: None,
+                mps_2q_fast_kernel_mode: None,
+                mps_2q_fast_kernels_used: None,
+                mps_2q_fast_kernel_applications: None,
+                mps_2q_fast_kernel_auto_skipped_applications: None,
+                mps_2q_diagonal_kernel_applications: None,
+                mps_2q_permutation_kernel_applications: None,
+                mps_2q_dense_kernel_applications: None,
+                mps_rank1_factorizations: None,
+                mps_svd_skipped_count: None,
+                mps_max_observed_bond_dimension: None,
+                mps_average_routed_distance: None,
+                mps_max_routed_distance: None,
+                mps_lookahead_decisions: None,
+                mps_lookahead_flipped_routes: None,
                 statevector_qubit_truncation_enabled: None,
                 statevector_qubit_truncation_used: None,
                 statevector_qubit_truncation_strategy: None,
@@ -502,6 +528,138 @@ impl PBlockSimulator {
     }
 }
 
+fn pblock_specialized_kernels_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let Ok(value) = std::env::var("DQSIM_PBLOCK_SPECIALIZED_KERNELS") else {
+            return true;
+        };
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off" | "disabled"
+        )
+    })
+}
+
+fn apply_pblock_cx(state: &mut [C], control: usize, target: usize, n: usize, sequential: bool) {
+    if pblock_specialized_kernels_enabled() {
+        if sequential {
+            apply_cx_kernel_seq(state, control, target, n);
+        } else {
+            apply_cx_kernel(state, control, target, n);
+        }
+    } else {
+        let qs = [control, target];
+        if sequential {
+            apply_n_qubit_seq(state, &m4(gates::cnot()), &qs, n);
+        } else {
+            apply_n_qubit(state, &m4(gates::cnot()), &qs, n);
+        }
+    }
+}
+
+fn apply_pblock_cz(state: &mut [C], control: usize, target: usize, n: usize, sequential: bool) {
+    if pblock_specialized_kernels_enabled() {
+        if sequential {
+            apply_cz_kernel_seq(state, control, target, n);
+        } else {
+            apply_cz_kernel(state, control, target, n);
+        }
+    } else {
+        let qs = [control, target];
+        if sequential {
+            apply_n_qubit_seq(state, &m4(gates::cz()), &qs, n);
+        } else {
+            apply_n_qubit(state, &m4(gates::cz()), &qs, n);
+        }
+    }
+}
+
+fn apply_pblock_swap(state: &mut [C], a: usize, b: usize, n: usize, sequential: bool) {
+    if pblock_specialized_kernels_enabled() {
+        if sequential {
+            apply_swap_kernel_seq(state, a, b, n);
+        } else {
+            apply_swap_kernel(state, a, b, n);
+        }
+    } else {
+        let qs = [a, b];
+        if sequential {
+            apply_n_qubit_seq(state, &m4(gates::swap()), &qs, n);
+        } else {
+            apply_n_qubit(state, &m4(gates::swap()), &qs, n);
+        }
+    }
+}
+
+fn apply_pblock_cswap(
+    state: &mut [C],
+    control: usize,
+    target1: usize,
+    target2: usize,
+    n: usize,
+    sequential: bool,
+) {
+    if pblock_specialized_kernels_enabled() {
+        if sequential {
+            apply_cswap_kernel_seq(state, control, target1, target2, n);
+        } else {
+            apply_cswap_kernel(state, control, target1, target2, n);
+        }
+    } else {
+        let qs = [control, target1, target2];
+        if sequential {
+            apply_n_qubit_seq(state, &m8(gates::cswap()), &qs, n);
+        } else {
+            apply_n_qubit(state, &m8(gates::cswap()), &qs, n);
+        }
+    }
+}
+
+fn apply_pblock_multi_controlled_x(
+    state: &mut [C],
+    controls: &[usize],
+    target: usize,
+    n: usize,
+    sequential: bool,
+) {
+    if pblock_specialized_kernels_enabled() {
+        if sequential {
+            apply_multi_controlled_x_kernel_seq(state, controls, target, n);
+        } else {
+            apply_multi_controlled_x_kernel(state, controls, target, n);
+        }
+        return;
+    }
+
+    let mut qs = controls.to_vec();
+    qs.push(target);
+    match controls.len() {
+        2 => {
+            if sequential {
+                apply_n_qubit_seq(state, &m8(gates::ccx()), &qs, n);
+            } else {
+                apply_n_qubit(state, &m8(gates::ccx()), &qs, n);
+            }
+        }
+        3 => {
+            if sequential {
+                apply_n_qubit_seq(state, &m16(gates::c3x()), &qs, n);
+            } else {
+                apply_n_qubit(state, &m16(gates::c3x()), &qs, n);
+            }
+        }
+        4 => {
+            if sequential {
+                apply_n_qubit_seq(state, &m32(gates::c4x()), &qs, n);
+            } else {
+                apply_n_qubit(state, &m32(gates::c4x()), &qs, n);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Instruction dispatcher
 // ---------------------------------------------------------------------------
@@ -602,12 +760,14 @@ fn dispatch(
         }
 
         Instruction::Cx { control, target } => {
-            let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit(&mut block.state, &m4(gates::cnot()), &qs, n);
+            let control = block.local(*control);
+            let target = block.local(*target);
+            apply_pblock_cx(&mut block.state, control, target, n, false);
         }
         Instruction::Cz { control, target } => {
-            let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit(&mut block.state, &m4(gates::cz()), &qs, n);
+            let control = block.local(*control);
+            let target = block.local(*target);
+            apply_pblock_cz(&mut block.state, control, target, n, false);
         }
         Instruction::Cy { control, target } => {
             let qs = [block.local(*control), block.local(*target)];
@@ -618,8 +778,9 @@ fn dispatch(
             apply_n_qubit(&mut block.state, &m4(gates::ch()), &qs, n);
         }
         Instruction::Swap { a, b } => {
-            let qs = [block.local(*a), block.local(*b)];
-            apply_n_qubit(&mut block.state, &m4(gates::swap()), &qs, n);
+            let a = block.local(*a);
+            let b = block.local(*b);
+            apply_pblock_swap(&mut block.state, a, b, n, false);
         }
         Instruction::Csx { control, target } => {
             let qs = [block.local(*control), block.local(*target)];
@@ -710,24 +871,19 @@ fn dispatch(
             control2,
             target,
         } => {
-            let qs = [
-                block.local(*control1),
-                block.local(*control2),
-                block.local(*target),
-            ];
-            apply_n_qubit(&mut block.state, &m8(gates::ccx()), &qs, n);
+            let controls = [block.local(*control1), block.local(*control2)];
+            let target = block.local(*target);
+            apply_pblock_multi_controlled_x(&mut block.state, &controls, target, n, false);
         }
         Instruction::Cswap {
             control,
             target1,
             target2,
         } => {
-            let qs = [
-                block.local(*control),
-                block.local(*target1),
-                block.local(*target2),
-            ];
-            apply_n_qubit(&mut block.state, &m8(gates::cswap()), &qs, n);
+            let control = block.local(*control);
+            let target1 = block.local(*target1);
+            let target2 = block.local(*target2);
+            apply_pblock_cswap(&mut block.state, control, target1, target2, n, false);
         }
         Instruction::Rccx {
             control1,
@@ -761,13 +917,13 @@ fn dispatch(
             control3,
             target,
         } => {
-            let qs = [
+            let controls = [
                 block.local(*control1),
                 block.local(*control2),
                 block.local(*control3),
-                block.local(*target),
             ];
-            apply_n_qubit(&mut block.state, &m16(gates::c3x()), &qs, n);
+            let target = block.local(*target);
+            apply_pblock_multi_controlled_x(&mut block.state, &controls, target, n, false);
         }
         Instruction::C3sqrtx {
             control1,
@@ -790,14 +946,14 @@ fn dispatch(
             control4,
             target,
         } => {
-            let qs = [
+            let controls = [
                 block.local(*control1),
                 block.local(*control2),
                 block.local(*control3),
                 block.local(*control4),
-                block.local(*target),
             ];
-            apply_n_qubit(&mut block.state, &m32(gates::c4x()), &qs, n);
+            let target = block.local(*target);
+            apply_pblock_multi_controlled_x(&mut block.state, &controls, target, n, false);
         }
 
         Instruction::Gate { name, qubits, .. } => {
@@ -813,10 +969,18 @@ fn dispatch(
                     apply_n_qubit(&mut block.state, &m4(gates::psi_plus()), &lqs, n);
                 }
                 "nonlocal_cz" | "remote_cz" => {
-                    apply_n_qubit(&mut block.state, &m4(gates::cz()), &lqs, n);
+                    if lqs.len() == 2 {
+                        apply_pblock_cz(&mut block.state, lqs[0], lqs[1], n, false);
+                    } else {
+                        apply_n_qubit(&mut block.state, &m4(gates::cz()), &lqs, n);
+                    }
                 }
                 "remote_cx" => {
-                    apply_n_qubit(&mut block.state, &m4(gates::cnot()), &lqs, n);
+                    if lqs.len() == 2 {
+                        apply_pblock_cx(&mut block.state, lqs[0], lqs[1], n, false);
+                    } else {
+                        apply_n_qubit(&mut block.state, &m4(gates::cnot()), &lqs, n);
+                    }
                 }
                 "remote_barrier" => {}
                 "remote_cu1" => {
@@ -977,12 +1141,14 @@ fn dispatch_par(
         }
 
         Instruction::Cx { control, target } => {
-            let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit_seq(&mut block.state, &m4(gates::cnot()), &qs, n);
+            let control = block.local(*control);
+            let target = block.local(*target);
+            apply_pblock_cx(&mut block.state, control, target, n, true);
         }
         Instruction::Cz { control, target } => {
-            let qs = [block.local(*control), block.local(*target)];
-            apply_n_qubit_seq(&mut block.state, &m4(gates::cz()), &qs, n);
+            let control = block.local(*control);
+            let target = block.local(*target);
+            apply_pblock_cz(&mut block.state, control, target, n, true);
         }
         Instruction::Cy { control, target } => {
             let qs = [block.local(*control), block.local(*target)];
@@ -993,8 +1159,9 @@ fn dispatch_par(
             apply_n_qubit_seq(&mut block.state, &m4(gates::ch()), &qs, n);
         }
         Instruction::Swap { a, b } => {
-            let qs = [block.local(*a), block.local(*b)];
-            apply_n_qubit_seq(&mut block.state, &m4(gates::swap()), &qs, n);
+            let a = block.local(*a);
+            let b = block.local(*b);
+            apply_pblock_swap(&mut block.state, a, b, n, true);
         }
         Instruction::Csx { control, target } => {
             let qs = [block.local(*control), block.local(*target)];
@@ -1085,24 +1252,19 @@ fn dispatch_par(
             control2,
             target,
         } => {
-            let qs = [
-                block.local(*control1),
-                block.local(*control2),
-                block.local(*target),
-            ];
-            apply_n_qubit_seq(&mut block.state, &m8(gates::ccx()), &qs, n);
+            let controls = [block.local(*control1), block.local(*control2)];
+            let target = block.local(*target);
+            apply_pblock_multi_controlled_x(&mut block.state, &controls, target, n, true);
         }
         Instruction::Cswap {
             control,
             target1,
             target2,
         } => {
-            let qs = [
-                block.local(*control),
-                block.local(*target1),
-                block.local(*target2),
-            ];
-            apply_n_qubit_seq(&mut block.state, &m8(gates::cswap()), &qs, n);
+            let control = block.local(*control);
+            let target1 = block.local(*target1);
+            let target2 = block.local(*target2);
+            apply_pblock_cswap(&mut block.state, control, target1, target2, n, true);
         }
         Instruction::Rccx {
             control1,
@@ -1136,13 +1298,13 @@ fn dispatch_par(
             control3,
             target,
         } => {
-            let qs = [
+            let controls = [
                 block.local(*control1),
                 block.local(*control2),
                 block.local(*control3),
-                block.local(*target),
             ];
-            apply_n_qubit_seq(&mut block.state, &m16(gates::c3x()), &qs, n);
+            let target = block.local(*target);
+            apply_pblock_multi_controlled_x(&mut block.state, &controls, target, n, true);
         }
         Instruction::C3sqrtx {
             control1,
@@ -1165,14 +1327,14 @@ fn dispatch_par(
             control4,
             target,
         } => {
-            let qs = [
+            let controls = [
                 block.local(*control1),
                 block.local(*control2),
                 block.local(*control3),
                 block.local(*control4),
-                block.local(*target),
             ];
-            apply_n_qubit_seq(&mut block.state, &m32(gates::c4x()), &qs, n);
+            let target = block.local(*target);
+            apply_pblock_multi_controlled_x(&mut block.state, &controls, target, n, true);
         }
 
         Instruction::Gate { name, qubits, .. } => {
@@ -1188,10 +1350,18 @@ fn dispatch_par(
                     apply_n_qubit_seq(&mut block.state, &m4(gates::psi_plus()), &lqs, n);
                 }
                 "nonlocal_cz" | "remote_cz" => {
-                    apply_n_qubit_seq(&mut block.state, &m4(gates::cz()), &lqs, n);
+                    if lqs.len() == 2 {
+                        apply_pblock_cz(&mut block.state, lqs[0], lqs[1], n, true);
+                    } else {
+                        apply_n_qubit_seq(&mut block.state, &m4(gates::cz()), &lqs, n);
+                    }
                 }
                 "remote_cx" => {
-                    apply_n_qubit_seq(&mut block.state, &m4(gates::cnot()), &lqs, n);
+                    if lqs.len() == 2 {
+                        apply_pblock_cx(&mut block.state, lqs[0], lqs[1], n, true);
+                    } else {
+                        apply_n_qubit_seq(&mut block.state, &m4(gates::cnot()), &lqs, n);
+                    }
                 }
                 "remote_barrier" => {}
                 "remote_cu1" => {

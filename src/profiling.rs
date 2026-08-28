@@ -198,6 +198,72 @@ pub struct ShotsProfile {
     /// Branching strategy used by the MPS shot loop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mps_shot_branching_strategy: Option<String>,
+    /// Whether lazy MPS qubit ordering was enabled for this profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_lazy_qubit_ordering_enabled: Option<bool>,
+    /// MPS routing strategy used for non-adjacent two-qubit gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_routing_mode: Option<String>,
+    /// Logical two-qubit gates processed by the MPS simulator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_logical_2q_gates: Option<usize>,
+    /// Adjacent routing SWAPs inserted by the MPS simulator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_routing_swaps: Option<usize>,
+    /// Total adjacent two-qubit tensor applications, including routing swaps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_adjacent_2q_applications: Option<usize>,
+    /// Number of SVD decompositions performed by MPS two-qubit applications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_svd_count: Option<usize>,
+    /// Time spent in MPS SVD calls, in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_svd_time_ms: Option<f64>,
+    /// Whether optimized MPS adjacent two-qubit kernels were enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_fast_kernels_enabled: Option<bool>,
+    /// MPS two-qubit fast-kernel selection mode: off, auto, or force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_fast_kernel_mode: Option<String>,
+    /// Whether any optimized MPS adjacent two-qubit kernel path was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_fast_kernels_used: Option<bool>,
+    /// Adjacent two-qubit applications handled by the optimized MPS assembly path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_fast_kernel_applications: Option<usize>,
+    /// Adjacent two-qubit applications kept on the baseline path by auto mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_fast_kernel_auto_skipped_applications: Option<usize>,
+    /// Optimized MPS diagonal two-qubit kernel applications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_diagonal_kernel_applications: Option<usize>,
+    /// Optimized MPS permutation two-qubit kernel applications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_permutation_kernel_applications: Option<usize>,
+    /// Optimized MPS dense two-qubit kernel applications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_2q_dense_kernel_applications: Option<usize>,
+    /// Two-site updates that stayed rank-1 and skipped SVD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_rank1_factorizations: Option<usize>,
+    /// Number of MPS SVD calls skipped by exact rank-1 factorization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_svd_skipped_count: Option<usize>,
+    /// Maximum bond dimension observed after MPS decompositions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_max_observed_bond_dimension: Option<usize>,
+    /// Average physical distance between logical two-qubit operands before routing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_average_routed_distance: Option<f64>,
+    /// Maximum physical distance between logical two-qubit operands before routing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_max_routed_distance: Option<usize>,
+    /// Number of lookahead routing choices made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_lookahead_decisions: Option<usize>,
+    /// Number of lookahead choices that selected the non-default route direction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mps_lookahead_flipped_routes: Option<usize>,
     /// Whether statevector qubit truncation/remapping was requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statevector_qubit_truncation_enabled: Option<bool>,

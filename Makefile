@@ -1,8 +1,9 @@
-.PHONY: build publish test perf perf-flamegraph perf-profile bench-two-qubit-gates lint check suite prepare-windows-scratch
+.PHONY: build publish test perf perf-selector perf-fit perf-flamegraph perf-profile bench-two-qubit-gates lint check suite prepare-windows-scratch
 
 DIST_DIR := dist
 REPOSITORY ?= testpypi
 PYTHON ?= 3.11
+PERF_FIT_ARGS ?=
 
 ifeq ($(OS),Windows_NT)
 ifneq (,$(filter //%,$(CURDIR)))
@@ -52,6 +53,13 @@ perf: export DQSIM_STATEVECTOR_2Q_KERNELS ?= 1
 perf: prepare-windows-scratch
 	uv run --python $(PYTHON) --extra test --with maturin maturin develop --skip-install --release
 	uv run --python $(PYTHON) --extra test -m pytest benchmarking/benchmarking_suite.py -v -s
+
+perf-selector: prepare-windows-scratch
+	uv run --python $(PYTHON) --extra test --with maturin maturin develop --skip-install --release
+	uv run --python $(PYTHON) --extra test -m pytest benchmarking/selector_validation_suite.py -v -s
+
+perf-fit: prepare-windows-scratch
+	uv run --python $(PYTHON) --extra test python scripts/analyze_simulator_fit.py $(PERF_FIT_ARGS)
 
 perf-flamegraph: prepare-windows-scratch
 	rm -rf target/flamegraphs

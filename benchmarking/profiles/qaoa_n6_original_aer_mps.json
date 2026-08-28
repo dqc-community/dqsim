@@ -7,21 +7,21 @@
   "num_shots": 10,
   "num_qubits": 6,
   "num_instructions": 276,
-  "preprocessing_ms": 1.2686550035141408,
-  "backend_setup_ms": 0.049883994506672025,
+  "preprocessing_ms": 1.2429240014171228,
+  "backend_setup_ms": 0.04859000000578817,
   "gate_fusion_ms": 0.0,
-  "parallel_execution_ms": 4.918236,
-  "aer_experiment_time_taken_ms": 4.918236,
-  "aer_result_time_taken_ms": 8.706808090209961,
-  "aer_job_wall_ms": 8.92465902143158,
-  "aer_time_taken_execute_ms": 4.931818,
+  "parallel_execution_ms": 2.531949,
+  "aer_experiment_time_taken_ms": 2.531949,
+  "aer_result_time_taken_ms": 5.179405212402344,
+  "aer_job_wall_ms": 5.338775999916834,
+  "aer_time_taken_execute_ms": 2.5449159999999997,
   "aer_fusion_time_taken_ms": null,
   "aer_fusion_applied": null,
-  "sample_measure_time_ms": 4.436877,
-  "wall_total_time_ms": 10.24426901130937,
-  "aer_wall_overhead_ms": 5.32603301130937,
-  "aer_job_overhead_ms": 4.00642302143158,
-  "aer_result_overhead_ms": 3.7885720902099607,
+  "sample_measure_time_ms": 2.0777550000000002,
+  "wall_total_time_ms": 6.63099400117062,
+  "aer_wall_overhead_ms": 4.09904500117062,
+  "aer_job_overhead_ms": 2.806826999916834,
+  "aer_result_overhead_ms": 2.6474562124023437,
   "aer_metadata_summary": {
     "experiment_metadata_keys": [
       "active_input_qubits",
@@ -65,13 +65,13 @@
     }
   },
   "per_shot_stats": null,
-  "total_time_ms": 4.918236,
+  "total_time_ms": 2.531949,
   "num_count_states": 8,
   "source_function_breakdown": [
     {
       "phase": "python_job_wrapper",
       "metric": "aer_result_time_taken_ms",
-      "time_ms": 8.706808090209961,
+      "time_ms": 5.179405212402344,
       "aer_function": "AerBackend._execute_circuits_job",
       "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/qiskit_aer/backends/aerbackend.py#L443-L496",
       "notes": "Compile, assemble, config generation, C++ execution, and result formatting timer."
@@ -79,7 +79,7 @@
     {
       "phase": "controller_execute",
       "metric": "aer_time_taken_execute_ms",
-      "time_ms": 4.931818,
+      "time_ms": 2.5449159999999997,
       "aer_function": "Controller::execute",
       "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/controllers/aer_controller.hpp#L604-L607",
       "notes": "C++ controller-level execution metadata when emitted by Aer."
@@ -95,7 +95,7 @@
     {
       "phase": "experiment_execution",
       "metric": "aer_experiment_time_taken_ms",
-      "time_ms": 4.918236,
+      "time_ms": 2.531949,
       "aer_function": "CircuitExecutor experiment execution / State::apply_ops",
       "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L714-L722",
       "notes": "Per-experiment simulator timer used as the reported Aer benchmark value."
@@ -103,7 +103,7 @@
     {
       "phase": "state_apply_ops",
       "metric": "aer_experiment_time_taken_ms",
-      "time_ms": 4.918236,
+      "time_ms": 2.531949,
       "aer_function": "State::apply_op / apply_gate / apply_measure",
       "aer_source": "https://github.com/Qiskit/qiskit-aer/tree/0.17.2/src/simulators/matrix_product_state",
       "notes": "Contained inside Aer experiment time; stock Aer does not split this into per-function timings."
@@ -111,7 +111,7 @@
     {
       "phase": "sample_measure",
       "metric": "sample_measure_time_ms",
-      "time_ms": 4.436877,
+      "time_ms": 2.0777550000000002,
       "aer_function": "CircuitExecutor::sample_measure",
       "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L1064-L1070",
       "notes": "Only populated when Aer takes the sample-measure optimization path."
@@ -119,7 +119,7 @@
     {
       "phase": "wall_overhead",
       "metric": "aer_wall_overhead_ms",
-      "time_ms": 5.32603301130937,
+      "time_ms": 4.09904500117062,
       "aer_function": "Python benchmark wrapper around backend.run(...).result().get_counts()",
       "aer_source": "benchmarking/benchmarking_suite.py::_time_aer_shots",
       "notes": "Wall time outside the reported Aer experiment timer."
@@ -132,7 +132,7 @@
       {
         "phase": "python_job_wrapper",
         "metric": "aer_result_time_taken_ms",
-        "time_ms": 8.706808090209961,
+        "time_ms": 5.179405212402344,
         "aer_function": "AerBackend._execute_circuits_job",
         "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/qiskit_aer/backends/aerbackend.py#L443-L496",
         "notes": "Compile, assemble, config generation, C++ execution, and result formatting timer."
@@ -140,7 +140,7 @@
       {
         "phase": "controller_execute",
         "metric": "aer_time_taken_execute_ms",
-        "time_ms": 4.931818,
+        "time_ms": 2.5449159999999997,
         "aer_function": "Controller::execute",
         "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/controllers/aer_controller.hpp#L604-L607",
         "notes": "C++ controller-level execution metadata when emitted by Aer."
@@ -156,7 +156,7 @@
       {
         "phase": "experiment_execution",
         "metric": "aer_experiment_time_taken_ms",
-        "time_ms": 4.918236,
+        "time_ms": 2.531949,
         "aer_function": "CircuitExecutor experiment execution / State::apply_ops",
         "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L714-L722",
         "notes": "Per-experiment simulator timer used as the reported Aer benchmark value."
@@ -164,7 +164,7 @@
       {
         "phase": "state_apply_ops",
         "metric": "aer_experiment_time_taken_ms",
-        "time_ms": 4.918236,
+        "time_ms": 2.531949,
         "aer_function": "State::apply_op / apply_gate / apply_measure",
         "aer_source": "https://github.com/Qiskit/qiskit-aer/tree/0.17.2/src/simulators/matrix_product_state",
         "notes": "Contained inside Aer experiment time; stock Aer does not split this into per-function timings."
@@ -172,7 +172,7 @@
       {
         "phase": "sample_measure",
         "metric": "sample_measure_time_ms",
-        "time_ms": 4.436877,
+        "time_ms": 2.0777550000000002,
         "aer_function": "CircuitExecutor::sample_measure",
         "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L1064-L1070",
         "notes": "Only populated when Aer takes the sample-measure optimization path."
@@ -180,7 +180,7 @@
       {
         "phase": "wall_overhead",
         "metric": "aer_wall_overhead_ms",
-        "time_ms": 5.32603301130937,
+        "time_ms": 4.09904500117062,
         "aer_function": "Python benchmark wrapper around backend.run(...).result().get_counts()",
         "aer_source": "benchmarking/benchmarking_suite.py::_time_aer_shots",
         "notes": "Wall time outside the reported Aer experiment timer."
@@ -189,7 +189,7 @@
   },
   "circuit": "qaoa_n6",
   "profile_file": "qaoa_n6_original_aer_mps.json",
-  "run_id": "20260731_110818",
+  "run_id": "20260825_034835",
   "comparison": {
     "previous_profile": {
       "profile_schema": "shots_v1",
@@ -200,21 +200,21 @@
       "num_shots": 10,
       "num_qubits": 6,
       "num_instructions": 276,
-      "preprocessing_ms": 1.4382890076376498,
-      "backend_setup_ms": 0.06055898847989738,
+      "preprocessing_ms": 3.1006720000732457,
+      "backend_setup_ms": 0.05201800013310276,
       "gate_fusion_ms": 0.0,
-      "parallel_execution_ms": 22.219063000000002,
-      "aer_experiment_time_taken_ms": 22.219063000000002,
-      "aer_result_time_taken_ms": 25.519371032714844,
-      "aer_job_wall_ms": 25.740331009728834,
-      "aer_time_taken_execute_ms": 22.234212,
+      "parallel_execution_ms": 3.327421,
+      "aer_experiment_time_taken_ms": 3.327421,
+      "aer_result_time_taken_ms": 6.195306777954102,
+      "aer_job_wall_ms": 6.508704000225407,
+      "aer_time_taken_execute_ms": 3.339444,
       "aer_fusion_time_taken_ms": null,
       "aer_fusion_applied": null,
-      "sample_measure_time_ms": 16.507615,
-      "wall_total_time_ms": 27.24028899683617,
-      "aer_wall_overhead_ms": 5.0212259968361685,
-      "aer_job_overhead_ms": 3.521268009728832,
-      "aer_result_overhead_ms": 3.3003080327148417,
+      "sample_measure_time_ms": 2.874056,
+      "wall_total_time_ms": 9.66239800072799,
+      "aer_wall_overhead_ms": 6.3349770007279895,
+      "aer_job_overhead_ms": 3.181283000225407,
+      "aer_result_overhead_ms": 2.8678857779541014,
       "aer_metadata_summary": {
         "experiment_metadata_keys": [
           "active_input_qubits",
@@ -258,13 +258,13 @@
         }
       },
       "per_shot_stats": null,
-      "total_time_ms": 22.219063000000002,
+      "total_time_ms": 3.327421,
       "num_count_states": 8,
       "source_function_breakdown": [
         {
           "phase": "python_job_wrapper",
           "metric": "aer_result_time_taken_ms",
-          "time_ms": 25.519371032714844,
+          "time_ms": 6.195306777954102,
           "aer_function": "AerBackend._execute_circuits_job",
           "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/qiskit_aer/backends/aerbackend.py#L443-L496",
           "notes": "Compile, assemble, config generation, C++ execution, and result formatting timer."
@@ -272,7 +272,7 @@
         {
           "phase": "controller_execute",
           "metric": "aer_time_taken_execute_ms",
-          "time_ms": 22.234212,
+          "time_ms": 3.339444,
           "aer_function": "Controller::execute",
           "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/controllers/aer_controller.hpp#L604-L607",
           "notes": "C++ controller-level execution metadata when emitted by Aer."
@@ -288,7 +288,7 @@
         {
           "phase": "experiment_execution",
           "metric": "aer_experiment_time_taken_ms",
-          "time_ms": 22.219063000000002,
+          "time_ms": 3.327421,
           "aer_function": "CircuitExecutor experiment execution / State::apply_ops",
           "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L714-L722",
           "notes": "Per-experiment simulator timer used as the reported Aer benchmark value."
@@ -296,7 +296,7 @@
         {
           "phase": "state_apply_ops",
           "metric": "aer_experiment_time_taken_ms",
-          "time_ms": 22.219063000000002,
+          "time_ms": 3.327421,
           "aer_function": "State::apply_op / apply_gate / apply_measure",
           "aer_source": "https://github.com/Qiskit/qiskit-aer/tree/0.17.2/src/simulators/matrix_product_state",
           "notes": "Contained inside Aer experiment time; stock Aer does not split this into per-function timings."
@@ -304,7 +304,7 @@
         {
           "phase": "sample_measure",
           "metric": "sample_measure_time_ms",
-          "time_ms": 16.507615,
+          "time_ms": 2.874056,
           "aer_function": "CircuitExecutor::sample_measure",
           "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L1064-L1070",
           "notes": "Only populated when Aer takes the sample-measure optimization path."
@@ -312,7 +312,7 @@
         {
           "phase": "wall_overhead",
           "metric": "aer_wall_overhead_ms",
-          "time_ms": 5.0212259968361685,
+          "time_ms": 6.3349770007279895,
           "aer_function": "Python benchmark wrapper around backend.run(...).result().get_counts()",
           "aer_source": "benchmarking/benchmarking_suite.py::_time_aer_shots",
           "notes": "Wall time outside the reported Aer experiment timer."
@@ -325,7 +325,7 @@
           {
             "phase": "python_job_wrapper",
             "metric": "aer_result_time_taken_ms",
-            "time_ms": 25.519371032714844,
+            "time_ms": 6.195306777954102,
             "aer_function": "AerBackend._execute_circuits_job",
             "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/qiskit_aer/backends/aerbackend.py#L443-L496",
             "notes": "Compile, assemble, config generation, C++ execution, and result formatting timer."
@@ -333,7 +333,7 @@
           {
             "phase": "controller_execute",
             "metric": "aer_time_taken_execute_ms",
-            "time_ms": 22.234212,
+            "time_ms": 3.339444,
             "aer_function": "Controller::execute",
             "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/controllers/aer_controller.hpp#L604-L607",
             "notes": "C++ controller-level execution metadata when emitted by Aer."
@@ -349,7 +349,7 @@
           {
             "phase": "experiment_execution",
             "metric": "aer_experiment_time_taken_ms",
-            "time_ms": 22.219063000000002,
+            "time_ms": 3.327421,
             "aer_function": "CircuitExecutor experiment execution / State::apply_ops",
             "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L714-L722",
             "notes": "Per-experiment simulator timer used as the reported Aer benchmark value."
@@ -357,7 +357,7 @@
           {
             "phase": "state_apply_ops",
             "metric": "aer_experiment_time_taken_ms",
-            "time_ms": 22.219063000000002,
+            "time_ms": 3.327421,
             "aer_function": "State::apply_op / apply_gate / apply_measure",
             "aer_source": "https://github.com/Qiskit/qiskit-aer/tree/0.17.2/src/simulators/matrix_product_state",
             "notes": "Contained inside Aer experiment time; stock Aer does not split this into per-function timings."
@@ -365,7 +365,7 @@
           {
             "phase": "sample_measure",
             "metric": "sample_measure_time_ms",
-            "time_ms": 16.507615,
+            "time_ms": 2.874056,
             "aer_function": "CircuitExecutor::sample_measure",
             "aer_source": "https://github.com/Qiskit/qiskit-aer/blob/0.17.2/src/simulators/circuit_executor.hpp#L1064-L1070",
             "notes": "Only populated when Aer takes the sample-measure optimization path."
@@ -373,7 +373,7 @@
           {
             "phase": "wall_overhead",
             "metric": "aer_wall_overhead_ms",
-            "time_ms": 5.0212259968361685,
+            "time_ms": 6.3349770007279895,
             "aer_function": "Python benchmark wrapper around backend.run(...).result().get_counts()",
             "aer_source": "benchmarking/benchmarking_suite.py::_time_aer_shots",
             "notes": "Wall time outside the reported Aer experiment timer."
@@ -382,20 +382,20 @@
       },
       "circuit": "qaoa_n6",
       "profile_file": "qaoa_n6_original_aer_mps.json",
-      "run_id": "20260731_100629"
+      "run_id": "20260825_034816"
     },
     "metrics": {
       "preprocessing_ms": {
-        "current": 1.2686550035141408,
-        "previous": 1.4382890076376498,
-        "delta": -0.16963400412350893,
-        "delta_percent": -11.794152859593089
+        "current": 1.2429240014171228,
+        "previous": 3.1006720000732457,
+        "delta": -1.857747998656123,
+        "delta_percent": -59.914366905375296
       },
       "backend_setup_ms": {
-        "current": 0.049883994506672025,
-        "previous": 0.06055898847989738,
-        "delta": -0.010674993973225355,
-        "delta_percent": -17.627431106728164
+        "current": 0.04859000000578817,
+        "previous": 0.05201800013310276,
+        "delta": -0.00342800012731459,
+        "delta_percent": -6.590026757166909
       },
       "gate_fusion_ms": {
         "current": 0.0,
@@ -404,76 +404,76 @@
         "delta_percent": null
       },
       "parallel_execution_ms": {
-        "current": 4.918236,
-        "previous": 22.219063000000002,
-        "delta": -17.300827,
-        "delta_percent": -77.86479114803356
+        "current": 2.531949,
+        "previous": 3.327421,
+        "delta": -0.7954720000000002,
+        "delta_percent": -23.906563070918892
       },
       "aer_experiment_time_taken_ms": {
-        "current": 4.918236,
-        "previous": 22.219063000000002,
-        "delta": -17.300827,
-        "delta_percent": -77.86479114803356
+        "current": 2.531949,
+        "previous": 3.327421,
+        "delta": -0.7954720000000002,
+        "delta_percent": -23.906563070918892
       },
       "aer_result_time_taken_ms": {
-        "current": 8.706808090209961,
-        "previous": 25.519371032714844,
-        "delta": -16.812562942504883,
-        "delta_percent": -65.88157255502821
+        "current": 5.179405212402344,
+        "previous": 6.195306777954102,
+        "delta": -1.0159015655517578,
+        "delta_percent": -16.397921878006542
       },
       "aer_job_wall_ms": {
-        "current": 8.92465902143158,
-        "previous": 25.740331009728834,
-        "delta": -16.815671988297254,
-        "delta_percent": -65.32811090091107
+        "current": 5.338775999916834,
+        "previous": 6.508704000225407,
+        "delta": -1.1699280003085732,
+        "delta_percent": -17.974822641620463
       },
       "aer_time_taken_execute_ms": {
-        "current": 4.931818,
-        "previous": 22.234212,
-        "delta": -17.302394,
-        "delta_percent": -77.81878665184986
+        "current": 2.5449159999999997,
+        "previous": 3.339444,
+        "delta": -0.7945280000000001,
+        "delta_percent": -23.792224094789436
       },
       "sample_measure_time_ms": {
-        "current": 4.436877,
-        "previous": 16.507615,
-        "delta": -12.070738000000002,
-        "delta_percent": -73.12224085671977
+        "current": 2.0777550000000002,
+        "previous": 2.874056,
+        "delta": -0.7963009999999997,
+        "delta_percent": -27.706523463704247
       },
       "wall_total_time_ms": {
-        "current": 10.24426901130937,
-        "previous": 27.24028899683617,
-        "delta": -16.9960199855268,
-        "delta_percent": -62.392950337277284
+        "current": 6.63099400117062,
+        "previous": 9.66239800072799,
+        "delta": -3.0314039995573694,
+        "delta_percent": -31.373205692096057
       },
       "aer_wall_overhead_ms": {
-        "current": 5.32603301130937,
-        "previous": 5.0212259968361685,
-        "delta": 0.3048070144732016,
-        "delta_percent": 6.070370357065343
+        "current": 4.09904500117062,
+        "previous": 6.3349770007279895,
+        "delta": -2.235931999557369,
+        "delta_percent": -35.2950294736733
       },
       "aer_job_overhead_ms": {
-        "current": 4.00642302143158,
-        "previous": 3.521268009728832,
-        "delta": 0.4851550117027479,
-        "delta_percent": 13.777849637185357
+        "current": 2.806826999916834,
+        "previous": 3.181283000225407,
+        "delta": -0.37445600030857307,
+        "delta_percent": -11.770596966131002
       },
       "aer_result_overhead_ms": {
-        "current": 3.7885720902099607,
-        "previous": 3.3003080327148417,
-        "delta": 0.4882640574951189,
-        "delta_percent": 14.794499563529277
+        "current": 2.6474562124023437,
+        "previous": 2.8678857779541014,
+        "delta": -0.22042956555175763,
+        "delta_percent": -7.686134756350309
       },
       "total_time_ms": {
-        "current": 4.918236,
-        "previous": 22.219063000000002,
-        "delta": -17.300827,
-        "delta_percent": -77.86479114803356
+        "current": 2.531949,
+        "previous": 3.327421,
+        "delta": -0.7954720000000002,
+        "delta_percent": -23.906563070918892
       },
       "per_shot_ms": {
-        "current": 0.4918236,
-        "previous": 2.2219063,
-        "delta": -1.7300827,
-        "delta_percent": -77.86479114803356
+        "current": 0.2531949,
+        "previous": 0.33274210000000004,
+        "delta": -0.07954720000000004,
+        "delta_percent": -23.906563070918896
       }
     }
   }

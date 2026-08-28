@@ -10,6 +10,7 @@ from bosonic_model.instructions import (
     ConditionalInstruction,
     Condition,
     CxInstruction,
+    CyInstruction,
     CzInstruction,
     HInstruction,
     MeasureInstruction,
@@ -72,6 +73,16 @@ class TestMpsSimulation:
         _assert_mps_matches_statevector(
             _circuit(4, instructions)
         )
+
+    def test_cy_gate_hint_matches_statevector(self) -> None:
+        instructions = [
+            HInstruction(qubit=2, qubits=[2]),
+            RyInstruction(qubit=0, qubits=[0], theta=0.91, params=[0.91]),
+            CyInstruction(control=2, target=0, qubits=[2, 0], params=[]),
+            CyInstruction(control=0, target=2, qubits=[0, 2], params=[]),
+        ]
+
+        _assert_mps_matches_statevector(_circuit(3, instructions))
 
     def test_entangled_gates(self) -> None:
         instructions = [
@@ -162,6 +173,48 @@ class TestMpsSimulation:
         ).probabilities()
         assert all(p >= -1e-12 for p in probs.values())
         assert abs(sum(probs.values()) - 1.0) < 1e-8
+
+    def test_fast_two_qubit_kernels_are_profiled(self) -> None:
+        circuit = _circuit(
+            3,
+            [
+                HInstruction(qubit=0, qubits=[0]),
+                CxInstruction(control=0, target=1, qubits=[0, 1], params=[]),
+                CzInstruction(control=1, target=2, qubits=[1, 2], params=[]),
+                SwapInstruction(a=0, b=2, qubits=[0, 2], params=[]),
+            ],
+        )
+
+        _assert_mps_matches_statevector(circuit)
+        result = MpsSimulator(seed=SEED).simulate_shots(circuit, shots=2, collect_profile=True)
+        profile = result["profile"]
+
+        assert profile["mps_2q_fast_kernels_enabled"] is True
+        assert profile["mps_2q_fast_kernel_mode"] == "auto"
+        assert profile["mps_2q_fast_kernels_used"] is True
+        assert profile["mps_2q_fast_kernel_applications"] > 0
+        assert profile["mps_2q_permutation_kernel_applications"] > 0
+        assert profile["mps_svd_count"] + profile["mps_svd_skipped_count"] == profile[
+            "mps_adjacent_2q_applications"
+        ]
+
+    def test_auto_fast_kernels_skip_high_shot_product_permutations(self) -> None:
+        circuit = _circuit(
+            2,
+            [
+                XInstruction(qubit=0, qubits=[0]),
+                CxInstruction(control=0, target=1, qubits=[0, 1], params=[]),
+            ],
+        )
+
+        result = MpsSimulator(seed=SEED).simulate_shots(circuit, shots=200, collect_profile=True)
+        profile = result["profile"]
+
+        assert profile["mps_2q_fast_kernel_mode"] == "auto"
+        assert profile["mps_2q_fast_kernel_applications"] == 0
+        assert profile["mps_2q_fast_kernel_auto_skipped_applications"] == 200
+        assert profile["mps_svd_count"] == 200
+        assert profile["mps_svd_skipped_count"] == 0
 
     def test_unsupported_multi_qubit_gate_raises(self) -> None:
         circuit = _circuit(
